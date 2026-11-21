@@ -22,3 +22,11 @@
 ## 2.0.0
 
 - Premier dépôt autonome et CLI SOAR.
+
+## V3.2 — Chaîne d'exécution (21 novembre 2026)
+
+- Ajoute `aegismesh-soar chain` : état des liaisons, guide du vrai workflow Shuffle, installation contrôlée de l'exécutable de preuve Wazuh, vérification TLS/auth de l'API, validation `OBSERVE`, test Fail2ban explicite et preuve Wazuh.
+- La commande de soumission attend désormais le **statut d'action terminal** : une acceptation HTTP du webhook Shuffle ne vaut plus succès.
+- En cas de preuve `WAZUH_AR_PROOF` sur l'agent local `000`, le bridge recherche une preuve effective dans le journal prévu. Sinon il maintient `dispatched_unverified`.
+- Refuse un second identifiant d'exécution différent pour la même décision : prévention des doubles exécutions via deux workflows.
+- Aucun déploiement automatique de workflow existant, aucune modification de `ossec.conf`, de Shuffle Docker ni des jails Fail2ban.

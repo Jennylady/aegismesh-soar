@@ -100,3 +100,8 @@ aegismesh-soar repo prepare-private
 ## Correctif V3.1 — readiness systemd et mise à jour depuis Kali
 
 Lire [docs/DEPLOIEMENT-V3.1.md](docs/DEPLOIEMENT-V3.1.md). Le patch ne déploie aucun workflow Shuffle ni action Wazuh/Fail2ban réelle.
+
+
+## Chaîne d’exécution réelle V3.2
+
+Utiliser `aegismesh-soar chain status`, `aegismesh-soar chain guide`, puis `aegismesh-soar chain observe` après création du workflow. Documentation complète : [docs/CHAINE-EXECUTION-V3.2.md](docs/CHAINE-EXECUTION-V3.2.md). Le raccordement au vrai Shuffle nécessite l’URL et les secrets configurés localement ; le code n’invente aucun workflow réel ni identifiant d’exécution.

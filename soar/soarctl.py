@@ -64,11 +64,15 @@ def main():
             request = urllib.request.Request(base+'/v1/decisions/'+ident, headers=headers)
             with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as r:
                 status = json.load(r)
-            if status['action_status'] != 'pending' or status['delivery'] not in ('queued','sending','retry'):
+            if status['action_status'] not in ('pending','executing'):
                 print(json.dumps(status, ensure_ascii=False, indent=2))
+                if status['action_status'] not in ('executed', 'dispatched_unverified'):
+                    raise SystemExit(3)
                 break
         else:
-            print('No action confirmation within wait interval. Inspect workflow and /v1/decisions/<id>.')
+            print('AUCUNE EXÉCUTION CONFIRMÉE dans le délai. Vérifier Shuffle (Executions) et la connexion du worker à /v1/execute.', file=sys.stderr)
+            print(json.dumps(status, ensure_ascii=False, indent=2))
+            raise SystemExit(4)
 
 if __name__ == '__main__':
     main()

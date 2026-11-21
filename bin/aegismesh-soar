@@ -121,7 +121,7 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py']
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py']
     for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
@@ -462,6 +462,8 @@ def main():
     sub.add_parser('service-status',help='État de notre service uniquement')
     d=sub.add_parser('submit',help='Soumettre une décision au bridge')
     d.add_argument('arguments',nargs=argparse.REMAINDER)
+    chain=sub.add_parser('chain',help='Raccorder et valider la chaîne Shuffle → Wazuh/Fail2ban')
+    chain.add_argument('arguments',nargs=argparse.REMAINDER)
     d=sub.add_parser('decision',help='État d’une décision')
     d.add_argument('decision_id')
     args=p.parse_args()
@@ -478,6 +480,8 @@ def main():
     elif args.action=='configure': configure(args)
     elif args.action=='repo': repo_access(args.operation)
     elif args.action=='network': cmd([sys.executable,str(ROOT/'ops/network.py')])
+    elif args.action=='chain':
+        cmd([sys.executable,str(ROOT/'ops/chain.py')]+(args.arguments or ['status']))
     elif args.action=='service-status':cmd(['systemctl','--no-pager','status',UNIT],check=False)
     elif args.action=='decision':
         root_required()

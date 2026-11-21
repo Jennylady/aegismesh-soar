@@ -210,6 +210,34 @@ def wazuh_api_request(method, path, body, headers=None, raw=False):
         return b.decode() if raw else json.loads(b)
 
 
+def local_wazuh_proof(proof_id, *, path='/var/ossec/logs/aegismesh-soar-proof.jsonl', wait_seconds=9):
+    """Check agent-side evidence, not just Wazuh API dispatch acknowledgement.
+
+    Only manager-local (agent 000) evidence is readable on this host. Other
+    agents require an explicit remote evidence check in a later stage.
+    """
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            with open(path, 'rb') as source:
+                source.seek(0, os.SEEK_END)
+                source.seek(max(0, source.tell() - 65536))
+                for raw in source:
+                    try:
+                        event = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if (event.get('proof_id') == proof_id and
+                            event.get('event') == 'wazuh-active-response-executed' and
+                            event.get('command') == 'add'):
+                        return True
+        except (FileNotFoundError, PermissionError, OSError):
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(.4)
+
+
 def wazuh_probe(data):
     agent = data['target'].get('agent_id')
     if not isinstance(agent, str) or not RX_AGENT.fullmatch(agent):
@@ -232,9 +260,11 @@ def wazuh_probe(data):
     block = result.get('data', {})
     if result.get('error') or block.get('total_affected_items') != 1:
         raise RuntimeError('Wazuh API n a pas confirmé la distribution de la commande')
-    # Wazuh API ACK only acknowledges dispatch; verify the agent-side evidence separately.
-    return {'effect': 'wazuh_ar_dispatched', 'agent_id': agent,
-            'execution_verified_on_agent': False, 'expected_proof_id': data['decision_id']}
+    # API ACK merely confirms dispatch. Only 000's proof is locally readable.
+    verified = agent == '000' and local_wazuh_proof(data['decision_id'])
+    return {'effect': 'wazuh_ar_verified' if verified else 'wazuh_ar_dispatched',
+            'agent_id': agent, 'execution_verified_on_agent': bool(verified),
+            'expected_proof_id': data['decision_id']}
 
 
 def execute_tag(data):
@@ -380,6 +410,8 @@ class HTTP(BaseHTTPRequestHandler):
                         if row['status'] not in ('sending', 'accepted_by_shuffle', 'action_executed'):
                             return self.reply(409, {'error': 'decision not acknowledged by Shuffle'})
                         if row['action_status'] != 'pending':
+                            if row['execution_id'] != execution_id:
+                                return self.reply(409, {'error': 'execution_id_conflict'})
                             return self.reply(200, {'decision_id': ident, 'status': row['action_status'],
                                                     'detail': row['detail'], 'duplicate': True})
                         c.execute("UPDATE decisions SET action_status='executing',execution_id=?,updated_at=? WHERE id=?",
