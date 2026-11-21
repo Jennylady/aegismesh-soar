@@ -1,3 +1,10 @@
+## 3.2.3 — Exploitation et sécurité
+
+- `aegismesh-soar logs --lines 70` : accès direct aux journaux du bridge, sans toucher aux autres services.
+- `aegismesh-soar configure rotate-action-token` : rotation explicite et interactive du jeton `SHUFFLE_ACTION_TOKEN`, conservation des autres secrets, redémarrage limité au bridge et vérification HTTP.
+- Le jeton n'est affiché qu'une fois dans le terminal à l'issue d'une rotation réussie ; il ne doit pas être mis dans Git ou des captures.
+- Test de non-régression : refus de rotation en mode non interactif, aide CLI pour logs et rotation.
+
 # Journal des versions
 
 ## 3.2.2 — 21 novembre 2026

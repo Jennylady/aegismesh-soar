@@ -105,3 +105,7 @@ Lire [docs/DEPLOIEMENT-V3.1.md](docs/DEPLOIEMENT-V3.1.md). Le patch ne déploie 
 ## Chaîne d’exécution réelle V3.2
 
 Utiliser `aegismesh-soar chain status`, `aegismesh-soar chain guide`, puis `aegismesh-soar chain observe` après création du workflow. Documentation complète : [docs/CHAINE-EXECUTION-V3.2.md](docs/CHAINE-EXECUTION-V3.2.md). Le raccordement au vrai Shuffle nécessite l’URL et les secrets configurés localement ; le code n’invente aucun workflow réel ni identifiant d’exécution.
+
+### Exploitation V3.2.3
+
+Sur le serveur GCP, consulter `aegismesh-soar logs --lines 70` ou renouveler le jeton compromis avec `aegismesh-soar configure rotate-action-token`. Reporter le nouveau secret uniquement dans l'en-tête d'authentification de l'application HTTP de Shuffle. Ne jamais le publier.
