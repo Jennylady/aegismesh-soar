@@ -54,3 +54,9 @@
 - Ne change aucun réseau Docker, nftables, service Wazuh ni Fail2ban.
 - Permet une récupération ponctuelle avec `python3 /opt/aegismesh/soar/bin/aegismesh-soar update`
   si le CLI déjà déployé a perdu son bit exécutable.
+
+## 3.2.5 — Shuffle réseau privé
+- `aegismesh-soar network --repair-shuffle --confirm` : règle UFW persistante limitée au bridge Docker Shuffle et au bridge SOAR 19081.
+- Sonde Orborus post-application ; annulation automatique si échec.
+- `aegismesh-soar network --undo-shuffle --confirm` : suppression de la seule règle gérée par SOAR.
+- Aucune réinstallation de Shuffle/Wazuh/Fail2ban ; tests locaux de politique.

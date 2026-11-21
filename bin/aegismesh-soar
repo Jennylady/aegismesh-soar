@@ -121,7 +121,7 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py']
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py']
     for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
@@ -526,6 +526,10 @@ def main():
     rep.add_argument('operation',choices=['status','prepare-private','use-ssh'])
     net=sub.add_parser('network',help='Inventaire réseau Docker et test lecture seule Orborus → Bridge')
     net.add_argument('--check',action='store_true',help='Teste la santé HTTP dans le réseau d’Orborus, sans modifier le pare-feu')
+    fix=net.add_mutually_exclusive_group()
+    fix.add_argument('--repair-shuffle',action='store_true',help='Autoriser via UFW uniquement Docker Shuffle → bridge; exige --confirm')
+    fix.add_argument('--undo-shuffle',action='store_true',help='Retirer uniquement la règle UFW AEGISMESH-SOAR; exige --confirm')
+    net.add_argument('--confirm',action='store_true',help='Confirmation requise pour modification UFW')
     sub.add_parser('service-status',help='État de notre service uniquement')
     lg=sub.add_parser('logs',help='Journaux du bridge AEGISMESH-SOAR seulement')
     lg.add_argument('--lines',type=int,default=70,help='Nombre de lignes (1 à 500)')
@@ -548,7 +552,14 @@ def main():
         sys.exit(0 if good else 1)
     elif args.action=='configure': configure(args)
     elif args.action=='repo': repo_access(args.operation)
-    elif args.action=='network': cmd([sys.executable,str(ROOT/'ops/network_probe.py' if args.check else ROOT/'ops/network.py')])
+    elif args.action=='network':
+        if args.repair_shuffle or args.undo_shuffle:
+            root_required()
+            if not args.confirm: fail('Ajout/retrait UFW refusé sans --confirm')
+            cmd([sys.executable,str(ROOT/'ops/network_repair.py'),
+                'repair' if args.repair_shuffle else 'undo','--confirm'])
+        else:
+            cmd([sys.executable,str(ROOT/'ops/network_probe.py' if args.check else ROOT/'ops/network.py')])
     elif args.action=='chain':
         cmd([sys.executable,str(ROOT/'ops/chain.py')]+(args.arguments or ['status']))
     elif args.action=='service-status':cmd(['systemctl','--no-pager','status',UNIT],check=False)

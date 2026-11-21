@@ -115,3 +115,6 @@ Sur le serveur GCP, consulter `aegismesh-soar logs --lines 70` ou renouveler le 
 Le correctif se publie uniquement depuis Kali avec `git add -A && git update-index --chmod=+x bin/aegismesh-soar`, puis commit/push. Sur GCP, **une seule fois**, lancer `python3 /opt/aegismesh/soar/bin/aegismesh-soar update`. La commande directe `aegismesh-soar update` fonctionne à nouveau après ce fast-forward.
 
 La commande `aegismesh-soar network --check` réalise deux GET /health depuis l’hôte puis depuis le namespace Orborus; elle ne modifie aucun pare-feu. Un échec depuis Orborus nécessite une inspection de la politique INPUT, ainsi qu’un essai depuis le vrai worker Shuffle.
+
+### Réseau Shuffle → bridge (UFW)
+Après validation `health`, si `network --check` retourne un timeout depuis Orborus et UFW est actif, utiliser en root `aegismesh-soar network --repair-shuffle --confirm`. La commande détecte passerelle, interface et CIDR de `aegismesh-shuffle_shuffle`, refuse tout bind public, ajoute une règle INPUT ciblée et teste `/health` depuis Orborus. Si le test échoue, elle retire la règle. Pour retour arrière explicite : `aegismesh-soar network --undo-shuffle --confirm`. Il faut ensuite vérifier le réseau du worker HTTP (potentiellement différent).
