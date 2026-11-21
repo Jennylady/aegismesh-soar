@@ -367,6 +367,65 @@ def local_wazuh_proof(proof_id, *, path='/var/ossec/logs/aegismesh-soar-proof.js
         time.sleep(.4)
 
 
+def wazuh_evidence(agent, decision_id, kind='proof', *, sources=None):
+    """Verify a remote result received back from Wazuh agent log collection.
+
+    A Wazuh API ACK is NOT proof of remote execution. This matches both exact
+    decision and exact Wazuh agent, and searches only bounded tails of local
+    manager archives/alerts. Missing log collection stays unverified.
+    """
+    if not RX_AGENT.fullmatch(str(agent)) or not RX_ID.fullmatch(str(decision_id)):
+        return ''
+    label = {'proof':'AEGISMESH-SOAR-PROOF','block':'AEGISMESH-SOAR-BLOCK'}[kind]
+    expected = f'{label} decision_id={decision_id} status=' + ('executed' if kind=='proof' else 'blocked')
+    paths = sources or ['/var/ossec/logs/alerts/alerts.json', '/var/ossec/logs/archives/archives.json']
+    for path in paths:
+        try:
+            with open(path,'rb') as stream:
+                stream.seek(0,os.SEEK_END)
+                stream.seek(max(0,stream.tell()-3_000_000))
+                for row in stream:
+                    if expected.encode('ascii') not in row:
+                        continue
+                    try: event=json.loads(row)
+                    except (ValueError,UnicodeError): continue
+                    event_agent=str((event.get('agent') or {}).get('id','')).zfill(3)
+                    if event_agent != str(agent):
+                        continue
+                    if expected not in str(event.get('full_log','')):
+                        continue
+                    return path
+        except (OSError, PermissionError):
+            continue
+    return ''
+
+
+def wazuh_verify_loop():
+    """Reconcile pending remote Wazuh evidence; no actions dispatched here."""
+    while True:
+        try:
+            with dbconn() as conn:
+                pending=conn.execute("SELECT id,payload,detail FROM decisions WHERE action_status='dispatched_unverified' LIMIT 50").fetchall()
+            for row in pending:
+                data=json.loads(row['payload'])
+                tag=data.get('tag')
+                if tag not in ('WAZUH_AR_PROOF','WAZUH_BLOCK_AGENT'):
+                    continue
+                agent=str(data.get('target',{}).get('agent_id',''))
+                location=wazuh_evidence(agent,row['id'],'proof' if tag=='WAZUH_AR_PROOF' else 'block')
+                if location:
+                    details=json.loads(row['detail'] or '{}')
+                    details.update({'agent_execution_verified':True,'execution_verified_on_agent':True,
+                                    'evidence_via_wazuh':'manager_log_collector','evidence_source':location})
+                    with dbconn() as conn:
+                        conn.execute("UPDATE decisions SET action_status='executed',status='action_executed',detail=?,updated_at=? WHERE id=? AND action_status='dispatched_unverified'",
+                                    (json.dumps(details),utcnow(),row['id']))
+                    log('wazuh_agent_evidence_verified',decision_id=row['id'],agent_id=agent)
+        except Exception as exc:
+            log('wazuh_evidence_error',error_type=type(exc).__name__)
+        time.sleep(5)
+
+
 def wazuh_probe(data):
     agent = data['target'].get('agent_id')
     if not isinstance(agent, str) or not RX_AGENT.fullmatch(agent):
@@ -375,8 +434,16 @@ def wazuh_probe(data):
     if agent not in allow:
         raise PermissionError('agent absent WAZUH_TEST_AGENTS')
     jwt = wazuh_auth_token()
-    wazuh_agent_record(agent, jwt)
-    body = {'command': '!aegismesh-soar-proof', 'arguments': [data['decision_id']],
+    item = wazuh_agent_record(agent, jwt)
+    osdata = item.get('os') or {}
+    oslabel = ' '.join(str(osdata.get(k,'')) for k in ('name','platform','version')).lower()
+    if agent == '000' or any(v in oslabel for v in ('ubuntu','debian','linux','kali','fedora','centos','rocky','rhel','suse','alma')):
+        script = '!aegismesh-soar-proof'
+    elif 'windows' in oslabel:
+        script = '!aegismesh-soar-proof.cmd'
+    else:
+        raise PermissionError('OS Wazuh inconnu : exécuteur de preuve non défini')
+    body = {'command': script, 'arguments': [data['decision_id']],
             'alert': {'data': {'srcip': '198.51.100.42'}}}
     result = wazuh_api_request('PUT', '/active-response?agents_list=' + agent,
                                body, {'Authorization': f'Bearer {jwt}', 'Content-Type': 'application/json'})
@@ -384,10 +451,13 @@ def wazuh_probe(data):
     if result.get('error') or block.get('total_affected_items') != 1:
         raise RuntimeError('Wazuh API n a pas confirmé la distribution de la commande')
     # API ACK merely confirms dispatch. Only 000's proof is locally readable.
-    verified = agent == '000' and local_wazuh_proof(data['decision_id'])
+    verified_local = agent == '000' and local_wazuh_proof(data['decision_id'])
+    evidence = '' if verified_local else wazuh_evidence(agent,data['decision_id'])
+    verified = verified_local or bool(evidence)
     return {'effect': 'wazuh_ar_verified' if verified else 'wazuh_ar_dispatched',
             'agent_id': agent, 'execution_verified_on_agent': bool(verified),
-            'expected_proof_id': data['decision_id']}
+            'expected_proof_id': data['decision_id'],
+            'evidence_source': evidence or ('local_manager_proof' if verified_local else None)}
 
 
 def wazuh_block_agent(data):
@@ -422,9 +492,11 @@ def wazuh_block_agent(data):
     block = result.get('data', {})
     if result.get('error') or int(block.get('total_affected_items', 0)) != 1:
         raise RuntimeError('Wazuh API refuse la distribution de l’action sur l’agent')
-    return {'effect': 'wazuh_ar_dispatched', 'agent_id': agent,
-            'script': 'aegismesh-soar-block', 'ip': ip,
-            'ttl_seconds': 120, 'agent_execution_verified': False,
+    evidence = wazuh_evidence(agent,data['decision_id'],'block')
+    return {'effect': 'wazuh_ar_verified' if evidence else 'wazuh_ar_dispatched',
+            'agent_id': agent, 'script': 'aegismesh-soar-block', 'ip': ip,
+            'ttl_seconds': 120, 'agent_execution_verified': bool(evidence),
+            'evidence_source': evidence or None,
             'agent_evidence_path': '/var/ossec/logs/aegismesh-soar-ar.jsonl'}
 
 
@@ -621,6 +693,7 @@ def main():
     DB = setting('SOAR_DB', '/var/lib/aegismesh-soar/decisions.sqlite3')
     init_db()
     threading.Thread(target=sender_loop, name='shuffle-sender', daemon=True).start()
+    threading.Thread(target=wazuh_verify_loop, name='wazuh-evidence-reconciler', daemon=True).start()
     host, port = setting('SOAR_BIND_HOST', '127.0.0.1'), int(setting('SOAR_PORT', '19081'))
     server = ThreadingHTTPServer((host, port), HTTP)
     log('startup', host=host, port=port, production_actions=enabled('ENABLE_PROD_ACTIONS'))

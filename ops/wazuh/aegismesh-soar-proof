@@ -17,6 +17,9 @@ try:
              'event': 'wazuh-active-response-executed'}
     with open('/var/ossec/logs/aegismesh-soar-proof.jsonl', 'a', encoding='utf-8') as out:
         out.write(json.dumps(event) + '\n')
+    # This is the standard Wazuh Active Response log collector input.
+    with open('/var/ossec/logs/active-responses.log', 'a', encoding='utf-8') as out:
+        out.write('AEGISMESH-SOAR-PROOF decision_id=' + key + ' status=executed\n')
     sys.exit(0)
 except Exception:
     sys.exit(1)

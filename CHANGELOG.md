@@ -1,3 +1,14 @@
+## V3.4.0 — Fleet Wazuh Windows / AD / Kali
+
+- Le CLI sur Kali ne requiert pas Wazuh API; les identifiants restent sur GCP.
+- `fleet status`, `fleet proof --agent-id`, `fleet verify --agent-id <ID> <decision>` sur GCP.
+- Exécutable Windows natif `.cmd` + `.ps1` sans modification des comptes AD, du pare-feu ni du registre.
+- Installateur Windows sur les deux postes (administrateur Windows, redémarrage Wazuh optionnel et explicite).
+- Installateur de preuve Linux indépendant du script de blocage existant.
+- Les deux scripts remontent un marqueur de décision dans active-responses.log standard; preuve rapprochée avec l’agent ID dans alerts.json / archives.json.
+- Réconciliation des exécutions `dispatched_unverified` toutes les 5 secondes quand le log collecté est disponible.
+- Aucune activation de réponse réseau ou modification de Wazuh ossec.conf pendant update.
+
 ## V3.3.0 — Exécution réelle Wazuh et Fail2ban
 
 - Intégration TLS de l’API Wazuh locale via son certificat serveur installé ; messages d’erreur explicites.

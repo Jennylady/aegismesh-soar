@@ -122,7 +122,7 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py']
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py', ROOT/'tests/test_fleet_v34.py']
     for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
@@ -357,6 +357,12 @@ def configure(args):
         locals_ = [part.removeprefix('inet').split('/')[0] for row in out.splitlines() for part in row.split() if '/' in part and part.count('.')==3]
         if str(address) not in locals_: fail('Adresse non attribuée à une interface de ce serveur')
         updates['SOAR_BIND_HOST'] = str(address)
+    elif args.section == 'wazuh-proof-agents':
+        value=args.value or (input('IDs Wazuh autorisés pour la preuve (001,002,006) : ').strip() if sys.stdin.isatty() else '')
+        ids=[x.strip() for x in value.split(',') if x.strip()]
+        if not ids or len(ids)>15 or any(not re.fullmatch(r'\d{3}', i) for i in ids):
+            fail('IDs attendus : liste de 1 à 15 identifiants Wazuh sur 3 chiffres')
+        updates['WAZUH_TEST_AGENTS']=','.join(sorted(set(ids)))
     elif args.section == 'enable-tests':
         updates['ENABLE_TEST_ACTIONS'] = 'true'
     elif args.section == 'disable-tests':
@@ -560,7 +566,7 @@ def main():
     hp=sub.add_parser('health',help='Vérification HTTP + diagnostic si indisponible')
     hp.add_argument('--verbose',action='store_true')
     c=sub.add_parser('configure',help='Paramétrer les connexions sans écraser Wazuh/Shuffle/Fail2ban')
-    c.add_argument('section',nargs='?',choices=['status','wizard','webhook','bind','enable-tests','disable-tests','shuffle-auth','wazuh','wazuh-ca','wazuh-url','rotate-action-token','production','disable-production'])
+    c.add_argument('section',nargs='?',choices=['status','wizard','webhook','bind','enable-tests','disable-tests','shuffle-auth','wazuh','wazuh-ca','wazuh-url','rotate-action-token','production','disable-production','wazuh-proof-agents'])
     c.add_argument('value',nargs='?',default='')
     rep=sub.add_parser('repo',help='GitHub public/privé : état, clé de déploiement et accès SSH')
     rep.add_argument('operation',choices=['status','prepare-private','use-ssh'])
@@ -575,6 +581,8 @@ def main():
     lg.add_argument('--lines',type=int,default=70,help='Nombre de lignes (1 à 500)')
     d=sub.add_parser('submit',help='Soumettre une décision au bridge')
     d.add_argument('arguments',nargs=argparse.REMAINDER)
+    fleet=sub.add_parser('fleet',help='Inventaire Wazuh et preuves d’exécution des agents via Shuffle')
+    fleet.add_argument('arguments',nargs=argparse.REMAINDER)
     chain=sub.add_parser('chain',help='Raccorder et valider la chaîne Shuffle → Wazuh/Fail2ban')
     chain.add_argument('arguments',nargs=argparse.REMAINDER)
     d=sub.add_parser('decision',help='État d’une décision')
@@ -600,6 +608,8 @@ def main():
                 'repair' if args.repair_shuffle else 'undo','--confirm'])
         else:
             cmd([sys.executable,str(ROOT/'ops/network_probe.py' if args.check else ROOT/'ops/network.py')])
+    elif args.action=='fleet':
+        cmd([sys.executable,str(ROOT/'ops/fleet.py')]+(args.arguments or ['status']))
     elif args.action=='chain':
         cmd([sys.executable,str(ROOT/'ops/chain.py')]+(args.arguments or ['status']))
     elif args.action=='service-status':cmd(['systemctl','--no-pager','status',UNIT],check=False)

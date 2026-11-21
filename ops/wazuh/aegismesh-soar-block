@@ -118,6 +118,10 @@ def main():
         fd = os.open(str(LOG), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
         with os.fdopen(fd,'a') as f:
             f.write(json.dumps(result, sort_keys=True) + '\n')
+        # Forward a machine-produced proof through the Wazuh agent log collector.
+        with open('/var/ossec/logs/active-responses.log','a',encoding='utf-8') as audit:
+            audit.write('AEGISMESH-SOAR-BLOCK decision_id=' + result['decision_id'] +
+                        ' status=blocked ttl=120\n')
         return 0
     except Exception as exc:
         # No secret or arbitrary original payload in logs.

@@ -123,3 +123,9 @@ Après validation `health`, si `network --check` retourne un timeout depuis Orbo
 ### Actions opérationnelles V3.3
 
 Consulter `docs/EXECUTION-REELLE-V3.3.md`. Les tags `F2B_BAN_SERVER` et `WAZUH_BLOCK_AGENT` disposent désormais d’exécuteurs réels, mais restent soumis à l’activation explicite, à la protection des IP de gestion, aux preuves et aux listes d’agents autorisés. Le script Active Response `aegismesh-soar-block` doit être installé sur **chaque agent Linux cible**. Une acceptation par l’API Wazuh ne prouve pas à elle seule une action exécutée sur l’agent.
+
+
+## Fleet V3.4
+
+Sur GCP uniquement: `aegismesh-soar fleet status`, `aegismesh-soar configure wazuh-proof-agents 001,002,006`, `aegismesh-soar configure enable-tests`, puis `aegismesh-soar fleet proof --agent-id 002`.
+Sur Kali, installer l'Active Response de preuve avec `sudo bash ops/wazuh/install_agent_proof.sh`. Sur chaque Windows, déployer `ops/wazuh/windows/*` avec l'installateur PowerShell administrateur. Le manager conserve les identifiants et le webhook Shuffle existants. Voir `docs/FLEET-WAZUH-V3.4.md`.
