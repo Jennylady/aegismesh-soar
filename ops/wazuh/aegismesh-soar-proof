@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+"""Wazuh Active Response proof: logs a single decision ID. NO enforcement."""
+import datetime
+import json
+import os
+import re
+import sys
+
+try:
+    message = json.loads(sys.stdin.readline())
+    args = (message.get('parameters') or {}).get('extra_args') or []
+    key = str(args[0]) if args else ''
+    if not re.fullmatch(r'[A-Za-z0-9_-]{8,64}', key):
+        raise ValueError('missing valid proof ID')
+    event = {'ts': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+             'proof_id': key, 'command': message.get('command', ''),
+             'event': 'wazuh-active-response-executed'}
+    with open('/var/ossec/logs/aegismesh-soar-proof.jsonl', 'a', encoding='utf-8') as out:
+        out.write(json.dumps(event) + '\n')
+    sys.exit(0)
+except Exception:
+    sys.exit(1)

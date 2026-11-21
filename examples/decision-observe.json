@@ -1,0 +1,10 @@
+{
+  "decision_id": "demo-2026-000001",
+  "incident_id": "incident-diagnostic-01",
+  "tag": "OBSERVE",
+  "confidence": 0.6,
+  "approved": false,
+  "evidence_ids": [],
+  "target": {},
+  "expires_at": "2027-01-01T00:00:00+00:00"
+}
