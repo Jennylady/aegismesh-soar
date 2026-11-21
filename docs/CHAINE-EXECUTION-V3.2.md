@@ -40,7 +40,7 @@ sudo aegismesh-soar health --verbose
 Dans l'interface **Shuffle existante** (ne pas réinstaller) :
 
 - Créer un nouveau workflow : `AEGISMESH - Decision Dispatcher`.
-- Ajouter un déclencheur **Webhook** ; le démarrer et copier son URL (forme `/api/v1/webhooks/webhook_<id>`).
+- Ajouter un déclencheur **Webhook** ; le démarrer et **copier l’URL exacte affichée par Shuffle** (selon version, le chemin peut contenir `/api/v1/hooks/webhook_<id>` ou `/api/v1/webhooks/webhook_<id>`). Ne jamais fabriquer l’identifiant.
 - Activer **l'authentification par en-tête requis** sur le webhook si disponible. Le bridge doit utiliser la même paire nom/secret : `aegismesh-soar configure shuffle-auth` (saisie masquée).
 - Ajouter une seule action **HTTP POST** connectée au Webhook (environnement servi par Orborus / worker local).
 - URL de l'action : `http://IP_PASSERELLE_DOCKER:19081/v1/execute`.
@@ -58,7 +58,7 @@ Dans l'interface **Shuffle existante** (ne pas réinstaller) :
 Relier ensuite le Webhook au bridge :
 
 ```bash
-sudo aegismesh-soar configure webhook 'http://127.0.0.1:15001/api/v1/webhooks/webhook_ID_REEL'
+sudo aegismesh-soar configure webhook 'http://127.0.0.1:15001/CHEMIN_EXACT_COPIE' 
 sudo aegismesh-soar chain observe
 ```
 
