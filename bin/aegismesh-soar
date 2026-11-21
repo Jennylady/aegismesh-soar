@@ -19,6 +19,8 @@ import urllib.request
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from ops import ui, health as health_module
 EXPECTED_ROOT = Path('/opt/aegismesh/soar')
 ENV_FILE = Path('/etc/aegismesh-soar/soar.env')
 STATE = Path('/var/lib/aegismesh-soar')
@@ -48,7 +50,8 @@ DEFAULTS = {
 
 
 def fail(msg):
-    raise SystemExit('ERREUR: ' + str(msg))
+    ui.error(msg)
+    raise SystemExit(2)
 
 
 def cmd(args, check=True, capture=False, cwd=None):
@@ -99,21 +102,26 @@ def atomic_env(values):
 
 
 def health():
-    cfg = load_env()
-    bind = cfg.get('SOAR_BIND_HOST','127.0.0.1')
-    port = cfg.get('SOAR_PORT','19081')
-    # Bind validation restricts address to an IP owned by this server. No proxy.
-    try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open('http://' + str(bind) + ':' + str(port) + '/health', timeout=3) as r:
-            return r.status == 200
-    except (urllib.error.URLError, TimeoutError, ValueError):
-        return False
+    cfg=load_env()
+    ok, reason=health_module.probe(cfg.get('SOAR_BIND_HOST','127.0.0.1'),cfg.get('SOAR_PORT','19081'))
+    return ok
+
+
+def wait_health():
+    cfg=load_env()
+    with ui.Spinner('Attente du pont SOAR après démarrage'):
+        ready, why=health_module.wait_ready(cfg.get('SOAR_BIND_HOST','127.0.0.1'),cfg.get('SOAR_PORT','19081'),seconds=18)
+    if not ready:
+        ui.warn('Le service systemd a été lancé, mais /health ne répond pas : '+why)
+        health_module.print_diagnosis(cfg)
+        fail('Démarrage non confirmé. Consulter le diagnostic ci-dessus ; aucun autre service modifié.')
+    ui.ok('Pont SOAR disponible : '+why)
+
 
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py']
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py']
     for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
@@ -136,7 +144,8 @@ def controlled_unit():
 def install(restart=True):
     root_required()
     safe_root()
-    tests()
+    with ui.Spinner('Tests d’intégration hors production'):
+        tests()
     was_installed = controlled_unit()
     if not ENV_FILE.exists():
         atomic_env({'DECISION_TOKEN': secrets.token_urlsafe(48),
@@ -164,9 +173,8 @@ def install(restart=True):
             cmd(['systemctl','enable','--now',UNIT])
         if cmd(['systemctl','is-active','--quiet',UNIT], check=False).returncode:
             fail('Service SOAR Bridge inactif après installation')
-        if not health():
-            fail('Service actif mais /health inaccessible en loopback')
-    print('Installé dans /opt/aegismesh/soar ; autres services et configurations inchangés.')
+        wait_health()
+    ui.ok('Installation validée dans /opt/aegismesh/soar ; autres services inchangés.')
 
 
 def check_repo():
@@ -201,15 +209,21 @@ def update(check_only=False):
         print('Mode --check: aucun fichier modifié ni service redémarré.'); return
     cmd(['git','merge','--ff-only','origin/main'],cwd=ROOT)
     try:
-        tests()
+        with ui.Spinner('Tests pré-déploiement'):
+            tests()
         if controlled_unit():
             # Exactly our unit and our bridge; preserve environment and other services.
             shutil.copyfile(UNIT_SRC, UNIT_DEST)
             os.chmod(UNIT_DEST,0o644)
             cmd(['systemctl','daemon-reload'])
             cmd(['systemctl','restart',UNIT])
-            if cmd(['systemctl','is-active','--quiet',UNIT],check=False).returncode or not health():
-                raise RuntimeError('Service SOAR Bridge non sain après update')
+            if cmd(['systemctl','is-active','--quiet',UNIT],check=False).returncode:
+                raise RuntimeError('Service SOAR Bridge inactif après update')
+            cfg=load_env()
+            ready, reason=health_module.wait_ready(cfg.get('SOAR_BIND_HOST','127.0.0.1'),cfg.get('SOAR_PORT','19081'),seconds=18)
+            if not ready:
+                health_module.print_diagnosis(cfg)
+                raise RuntimeError('Bridge /health en échec après update : '+reason)
         print('Mise à jour réussie:', new[:12])
     except BaseException as e:
         print('Échec de validation, retour au code précédent :',type(e).__name__,e,file=sys.stderr)
@@ -223,11 +237,19 @@ def update(check_only=False):
 
 def configure(args):
     root_required()
-    if not ENV_FILE.exists(): fail('Installer le service avant configuration')
+    if args.section in (None,'wizard'):
+        return configure_wizard()
+    if args.section == 'status':
+        return configure_status()
+    if not ENV_FILE.exists(): fail('Installer le service avant de modifier la configuration')
     updates = {}
     if args.section == 'webhook':
         value = args.value
-        u = urlsplit(value)
+        if not value:
+            if sys.stdin.isatty(): value=input('URL webhook Shuffle (saisie non masquée) : ').strip()
+            else: fail('Utiliser configure webhook URL ou configure sans argument pour le menu')
+        try: u = urlsplit(value)
+        except ValueError: fail('URL de webhook invalide')
         if not re.fullmatch(r'/api/v1/webhooks/webhook_[A-Za-z0-9_-]+',u.path) or u.username or u.password or u.query or u.fragment:
             fail('URL de webhook Shuffle invalide')
         if u.scheme not in ('http','https') or not u.hostname:
@@ -236,7 +258,8 @@ def configure(args):
             fail('Webhook HTTP accepté uniquement en loopback; utiliser HTTPS ailleurs')
         updates['SHUFFLE_WEBHOOK_URL'] = value
     elif args.section == 'bind':
-        try: address = ipaddress.ip_address(args.value)
+        value=args.value or (input('Adresse IPv4 de bind : ').strip() if sys.stdin.isatty() else '')
+        try: address = ipaddress.ip_address(value)
         except ValueError: fail('IP invalide')
         if address.version != 4 or not (address.is_private or address.is_loopback):
             fail('Seule une IPv4 privée ou loopback appartenant à cet hôte est autorisée')
@@ -255,6 +278,13 @@ def configure(args):
             fail('Header ou secret invalide')
         updates = {'SHUFFLE_WEBHOOK_HEADER_NAME': name,
                    'SHUFFLE_WEBHOOK_HEADER_VALUE': value}
+    elif args.section == 'wazuh-ca':
+        path=Path(args.value or (input('Chemin du certificat CA Wazuh (.pem) : ').strip() if sys.stdin.isatty() else ''))
+        if not path.is_absolute() or not path.is_file(): fail('Certificat CA Wazuh non trouvé (chemin absolu requis)')
+        import ssl
+        try: ssl.create_default_context(cafile=str(path))
+        except (OSError,ssl.SSLError) as exc: fail('Certificat CA non valide: '+type(exc).__name__)
+        updates={'WAZUH_CA_FILE': str(path)}
     elif args.section == 'wazuh':
         user = input('Utilisateur API Wazuh (droits minimaux) : ').strip()
         password = getpass.getpass('Mot de passe API Wazuh : ')
@@ -265,8 +295,112 @@ def configure(args):
     atomic_env(updates)
     if controlled_unit():
         cmd(['systemctl','restart',UNIT])
-        if not health(): fail('Le service ne répond plus après configuration')
-    print('Configuration modifiée; secret non affiché; les autres services n’ont pas été touchés.')
+        wait_health()
+    ui.ok('Configuration modifiée; secrets non affichés; autres services inchangés.')
+
+
+def configure_status():
+    cfg=load_env()
+    print('\n  CONFIGURATION DE LA CHAÎNE SOAR (secrets masqués)')
+    fields=[
+        ('Écoute locale',cfg.get('SOAR_BIND_HOST','127.0.0.1')+':'+cfg.get('SOAR_PORT','19081')),
+        ('Webhook Shuffle','configuré' if cfg.get('SHUFFLE_WEBHOOK_URL') else 'à configurer'),
+        ('Authentification webhook','configurée' if cfg.get('SHUFFLE_WEBHOOK_HEADER_NAME') and cfg.get('SHUFFLE_WEBHOOK_HEADER_VALUE') else 'non configurée'),
+        ('Identifiants API Wazuh','configurés' if cfg.get('WAZUH_USER') and cfg.get('WAZUH_PASSWORD') else 'à configurer'),
+        ('Tests actifs',cfg.get('ENABLE_TEST_ACTIONS','false')),
+        ('Actions production',cfg.get('ENABLE_PROD_ACTIONS','false')),
+        ('Base de données','configurée' if cfg.get('SOAR_DB') else 'défaut'),
+    ]
+    for label,val in fields:
+        print('  '+label.ljust(27)+' : '+val)
+    health_module.print_diagnosis(cfg)
+
+
+def configure_wizard():
+    if not sys.stdin.isatty():
+        print('Mode interactif requis. Commandes: configure status | webhook URL | shuffle-auth | wazuh | wazuh-ca /chemin/ca.pem | bind IP | enable-tests | disable-tests')
+        return
+    while True:
+        choice=ui.menu('CONFIGURATION GUIDÉE — aucun secret affiché',[
+            ('1','État actuel et santé du bridge'),
+            ('2','Webhook Shuffle (après création du workflow)'),
+            ('3','Header d’authentification Shuffle'),
+            ('4','Accès API Wazuh'),
+            ('5','Adresse privée pour le rappel depuis Shuffle Docker'),
+            ('6','Activer les tests de sécurité contrôlés'),
+            ('7','Désactiver les tests de sécurité'),
+            ('8','Diagnostic installations existantes'),
+            ('9','Certificat CA pour API Wazuh (TLS vérifié)'),
+            ('0','Terminer')])
+        if choice in ('0',None,''): break
+        names={'2':'webhook','3':'shuffle-auth','4':'wazuh','5':'bind','6':'enable-tests','7':'disable-tests','9':'wazuh-ca'}
+        if choice=='1': configure_status()
+        elif choice=='8': run_doctor()
+        elif choice in names:
+            class C: pass
+            a=C();a.section=names[choice];a.value=''
+            try:
+                if choice=='6' and input('Activer les tests avec actions réelles contrôlées ? (écrire OUI) : ')!='OUI':
+                    ui.warn('Activation annulée');continue
+                configure(a)
+            except (ValueError,KeyboardInterrupt) as e: ui.warn('Configuration interrompue, aucun autre service modifié')
+        else: ui.warn('Choix non reconnu')
+
+
+def repo_access(action):
+    root_required()
+    check_repo()
+    ssh_url='git@github.com:Jennylady/aegismesh-soar.git'
+    current=cmd(['git','remote','get-url','origin'],cwd=ROOT,capture=True).stdout.strip()
+    print('Origin actuel :', 'SSH GitHub' if current.startswith(('git@github.com:','ssh://')) else 'HTTPS GitHub')
+    if action=='status':
+        print('Public: HTTPS suffit pour fetch. Privé: une clé SSH de déploiement en lecture seule est recommandée.')
+        return
+    keydir=Path('/etc/aegismesh-soar/keys')
+    key=keydir/'github_deploy_ed25519'
+    keydir.mkdir(parents=True,exist_ok=True,mode=0o700)
+    os.chmod(keydir,0o700)
+    if not key.exists():
+        cmd(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(key),'-C','aegismesh-soar-deploy'])
+    os.chmod(key,0o600)
+    pub=key.with_suffix('.pub')
+    if not pub.exists(): fail('Fichier de clé publique manquant; vérifier /etc/aegismesh-soar/keys')
+    print('\nCLÉ PUBLIQUE À AJOUTER DANS GitHub > Settings > Deploy keys (lecture seule) :')
+    print(pub.read_text().strip())
+    print('\nAucune clé privée n’est affichée. Après ajout sur GitHub : aegismesh-soar repo use-ssh')
+    if action=='prepare-private': return
+    command=f'ssh -i {key} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8'
+    env=os.environ.copy();env['GIT_SSH_COMMAND']=command;env['GIT_TERMINAL_PROMPT']='0'
+    try:
+        p=subprocess.run(['git','ls-remote',ssh_url,'refs/heads/main'],cwd=ROOT,
+                         env=env,capture_output=True,text=True,timeout=25)
+    except (subprocess.TimeoutExpired,OSError): fail('Connexion SSH GitHub indisponible; remote inchangé')
+    if p.returncode or not p.stdout.strip():
+        ui.warn('Accès SSH non validé; remote inchangé. Vérifier la Deploy key et la clé hôte GitHub dans known_hosts.')
+        raise SystemExit(3)
+    cmd(['git','remote','set-url','origin',ssh_url],cwd=ROOT)
+    cmd(['git','config','--local','core.sshCommand',command],cwd=ROOT)
+    ui.ok('Accès SSH validé, origin utilise désormais SSH (fonctionne aussi si dépôt privé).')
+
+
+def main_menu():
+    if not sys.stdin.isatty(): return False
+    ui.banner()
+    choice=ui.menu('CENTRE DE CONTRÔLE — choisir une opération',[
+        ('1','État et diagnostic de l’installation'),
+        ('2','Configuration guidée'),
+        ('3','Installer / réparer le bridge'),
+        ('4','Mise à jour depuis GitHub'),
+        ('5','Préparer le passage de GitHub en privé'),
+        ('6','Tests non destructifs'),
+        ('7','Réseau Docker et Shuffle (lecture seule)'),
+        ('0','Quitter')])
+    actions={'1':['health','--verbose'],'2':['configure'],'3':['install'],
+             '4':['update'],'5':['repo','prepare-private'],'6':['test'],'7':['network']}
+    if choice in actions:
+        sys.argv=[sys.argv[0]]+actions[choice]
+        main()
+    return True
 
 
 def run_doctor():
@@ -282,29 +416,43 @@ def main():
         import soarctl
         sys.argv = ['soarctl.py', 'submit'] + sys.argv[2:]
         return soarctl.main()
+    if len(sys.argv)==1 and main_menu(): return
     p=argparse.ArgumentParser(prog='aegismesh-soar', description='Gestion autonome de la chaîne SOAR AEGISMESH')
+    p.add_argument('--no-color',action='store_true',help='Désactiver la couleur et l’animation')
+    p.add_argument('--version',action='version',version=(ROOT/'VERSION').read_text().strip())
     sub=p.add_subparsers(dest='action',required=True)
     sub.add_parser('install',help='Crée uniquement le nouveau bridge SOAR et sa configuration privée')
     update_parser=sub.add_parser('update',help='git fetch + ff-only main + tests + restart du bridge; rollback si erreur')
     update_parser.add_argument('--check',action='store_true',help='Vérifier seulement, sans changer les fichiers')
     sub.add_parser('doctor',help='Diagnostic non destructif des installations préexistantes')
     sub.add_parser('test',help='Tests unitaires + intégration avec faux Shuffle local')
-    sub.add_parser('health',help='Vérification HTTP du bridge local')
+    hp=sub.add_parser('health',help='Vérification HTTP + diagnostic si indisponible')
+    hp.add_argument('--verbose',action='store_true')
     c=sub.add_parser('configure',help='Paramétrer les connexions sans écraser Wazuh/Shuffle/Fail2ban')
-    c.add_argument('section',choices=['webhook','bind','enable-tests','disable-tests','shuffle-auth','wazuh'])
+    c.add_argument('section',nargs='?',choices=['status','wizard','webhook','bind','enable-tests','disable-tests','shuffle-auth','wazuh','wazuh-ca'])
     c.add_argument('value',nargs='?',default='')
+    rep=sub.add_parser('repo',help='GitHub public/privé : état, clé de déploiement et accès SSH')
+    rep.add_argument('operation',choices=['status','prepare-private','use-ssh'])
+    sub.add_parser('network',help='Inventaire non destructif du réseau Docker/Shuffle')
     sub.add_parser('service-status',help='État de notre service uniquement')
     d=sub.add_parser('submit',help='Soumettre une décision au bridge')
     d.add_argument('arguments',nargs=argparse.REMAINDER)
     d=sub.add_parser('decision',help='État d’une décision')
     d.add_argument('decision_id')
     args=p.parse_args()
+    if args.no_color: os.environ['NO_COLOR']='1'
+    ui.banner()
     if args.action=='install': install()
     elif args.action=='update': update(args.check)
     elif args.action=='doctor': run_doctor()
     elif args.action=='test': tests()
-    elif args.action=='health': print('OK' if health() else 'INJOIGNABLE'); sys.exit(0 if health() else 1)
+    elif args.action=='health':
+        good=health_module.print_diagnosis(load_env()) if args.verbose or not health() else True
+        if good: ui.ok('Bridge SOAR répond correctement')
+        sys.exit(0 if good else 1)
     elif args.action=='configure': configure(args)
+    elif args.action=='repo': repo_access(args.operation)
+    elif args.action=='network': cmd([sys.executable,str(ROOT/'ops/network.py')])
     elif args.action=='service-status':cmd(['systemctl','--no-pager','status',UNIT],check=False)
     elif args.action=='decision':
         root_required()

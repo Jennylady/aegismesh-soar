@@ -92,3 +92,15 @@ examples/                          contrat de décision (exemple non destiné à
 ```
 
 Consulter [docs/INTEGRATION.md](docs/INTEGRATION.md) et [docs/SHUFFLE.md](docs/SHUFFLE.md) avant de raccorder des actions.
+
+## Nouveautés V3 — déploiement et configuration
+
+Lire [docs/DEPLOIEMENT-V3.md](docs/DEPLOIEMENT-V3.md) pour migrer depuis V2 sans toucher à la configuration existante, diagnostiquer le bridge, utiliser le nouveau menu coloré, préparer le dépôt privé et connecter le vrai workflow Shuffle.
+
+```bash
+aegismesh-soar                # menu interactif coloré
+aegismesh-soar health --verbose
+aegismesh-soar configure      # menu guidé
+aegismesh-soar network
+aegismesh-soar repo prepare-private
+```

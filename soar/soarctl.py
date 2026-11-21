@@ -38,7 +38,7 @@ def main():
     check.add_argument('decision_id')
     args = ap.parse_args()
     cfg = config()
-    base = 'http://127.0.0.1:' + cfg.get('SOAR_PORT','19081')
+    base = 'http://' + cfg.get('SOAR_BIND_HOST','127.0.0.1') + ':' + cfg.get('SOAR_PORT','19081')
     headers = {'X-Aegismesh-Token': cfg['DECISION_TOKEN'], 'Content-Type': 'application/json'}
     if args.command == 'status':
         path, payload = '/v1/decisions/' + args.decision_id, None
@@ -53,7 +53,7 @@ def main():
         path, payload = '/v1/decisions', json.dumps(data).encode()
     request = urllib.request.Request(base+path, payload, headers=headers, method='POST' if payload else 'GET')
     try:
-        with urllib.request.urlopen(request, timeout=6) as r:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=6) as r:
             print(json.dumps(json.load(r), ensure_ascii=False, indent=2))
     except urllib.error.HTTPError as e:
         print('HTTP', e.code, e.read(500).decode(), file=sys.stderr)
@@ -62,7 +62,7 @@ def main():
         for _ in range(max(0,min(args.wait,40))):
             time.sleep(1)
             request = urllib.request.Request(base+'/v1/decisions/'+ident, headers=headers)
-            with urllib.request.urlopen(request, timeout=5) as r:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as r:
                 status = json.load(r)
             if status['action_status'] != 'pending' or status['delivery'] not in ('queued','sending','retry'):
                 print(json.dumps(status, ensure_ascii=False, indent=2))
