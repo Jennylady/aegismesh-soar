@@ -1,3 +1,12 @@
+## V3.3.0 — Exécution réelle Wazuh et Fail2ban
+
+- Intégration TLS de l’API Wazuh locale via son certificat serveur installé ; messages d’erreur explicites.
+- Action WAZUH_BLOCK_AGENT sur agent Linux explicitement autorisé, utilisant un exécuteur nftables agent-side avec TTL 120 s.
+- Action F2B_BAN_SERVER exigeant une vérification nftables de la jail SOAR et un bantime borné.
+- Configuration production opt-in, liste d’agents, CIDR de gestion et commandes chain pour les actions réelles.
+- Scripts d’installation agent Kali/Linux et tests d’adaptateurs et TLS sans effet réseau.
+- Statut `dispatched_unverified` conservé tant que l’action agent distante n’est pas vérifiée.
+
 ## 3.2.3 — Exploitation et sécurité
 
 - `aegismesh-soar logs --lines 70` : accès direct aux journaux du bridge, sans toucher aux autres services.

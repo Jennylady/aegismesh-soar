@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Stateless Wazuh AR agent-side temporary IPv4 blocking via nftables.
+
+Install *on Linux agents*, not just on the manager. This program reads the Wazuh
+4.x Active Response JSON via stdin. It creates an isolated nftables set whose
+elements expire automatically after 120 seconds. No generic shell execution.
+"""
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+TABLE = 'aegismesh_soar_ar'
+SET = 'blocked_ipv4'
+LOG = Path('/var/ossec/logs/aegismesh-soar-ar.jsonl')
+TTL_SECONDS = 120
+NFT_BIN = next((p for p in ('/usr/sbin/nft','/usr/bin/nft') if os.path.isfile(p)), shutil.which('nft') or '/usr/sbin/nft')
+SS_BIN = next((p for p in ('/usr/bin/ss','/usr/sbin/ss') if os.path.isfile(p)), shutil.which('ss') or '/usr/bin/ss')
+
+
+def run(*args):
+    result = subprocess.run([NFT_BIN, *args], text=True, capture_output=True, timeout=8)
+    if result.returncode:
+        raise RuntimeError('nft ' + args[0] + ' failed')
+    return result.stdout
+
+
+def exists(*args):
+    return subprocess.run([NFT_BIN, *args], text=True, capture_output=True, timeout=8).returncode == 0
+
+
+def ensure_table():
+    if not exists('list', 'table', 'inet', TABLE):
+        run('add', 'table', 'inet', TABLE)
+    if not exists('list', 'chain', 'inet', TABLE, 'input'):
+        run('add', 'chain', 'inet', TABLE, 'input', '{ type filter hook input priority -5; policy accept; }')
+    if not exists('list', 'set', 'inet', TABLE, SET):
+        run('add', 'set', 'inet', TABLE, SET, '{ type ipv4_addr; flags timeout; }')
+    chain = run('list', 'chain', 'inet', TABLE, 'input')
+    if 'ip saddr @'+SET+' drop' not in chain:
+        run('add', 'rule', 'inet', TABLE, 'input', 'ip', 'saddr', '@'+SET, 'drop')
+
+
+def management_peers():
+    # Do not block addresses of *currently established* inbound SSH sessions.
+    peers = set()
+    try:
+        status = subprocess.run([SS_BIN, '-H', '-tn', 'state', 'established', '( sport = :22 )'],
+                                capture_output=True, text=True, timeout=3)
+        if status.returncode:
+            raise PermissionError('SSH management connections cannot be checked')
+        output = status.stdout
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) >= 5:
+                peer = parts[4].rsplit(':', 1)[0].strip('[]')
+                try:
+                    peers.add(ipaddress.ip_address(peer))
+                except ValueError:
+                    pass
+    except (OSError, subprocess.TimeoutExpired):
+        raise PermissionError('ss command unavailable: cannot protect current SSH management') from None
+    return peers
+
+
+def validate_ip(src):
+    ip = ipaddress.ip_address(src)
+    if not isinstance(ip, ipaddress.IPv4Address) or not ip.is_global:
+        raise PermissionError('Only public global IPv4 addresses can be blocked')
+    if ip in management_peers():
+        raise PermissionError('Currently connected SSH management address protected')
+    # Optional local denylist for management CIDRs, independent of the server bridge.
+    path = Path('/etc/aegismesh-soar-agent/protected-cidrs.txt')
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            line = line.split('#')[0].strip()
+            if line and ip in ipaddress.ip_network(line, strict=False):
+                raise PermissionError('Agent-protected CIDR')
+    return str(ip)
+
+
+def process(payload):
+    if payload.get('command') != 'add':
+        # Wazuh API-driven commands should be stateless. No command execution on delete.
+        raise PermissionError('Only add is supported; temporary nft set expires automatically')
+    alert = payload.get('parameters', {}).get('alert') or {}
+    data = alert.get('data') or {}
+    src = validate_ip(data.get('srcip'))
+    proof_id = str(data.get('decision_id', ''))
+    if not re.fullmatch(r'[A-Za-z0-9_-]{8,64}', proof_id):
+        raise ValueError('Missing validated decision_id')
+    ensure_table()
+    try:
+        run('add', 'element', 'inet', TABLE, SET, '{ ' + src + ' timeout '+str(TTL_SECONDS)+'s }')
+    except RuntimeError:
+        # Re-entrant request: only accept the error if the exact IP is already present.
+        present = run('list', 'set', 'inet', TABLE, SET)
+        if not re.search(r'(?<![\d.])'+re.escape(src)+r'(?![\d.])', present):
+            raise
+    proof = run('list', 'set', 'inet', TABLE, SET)
+    if not re.search(r'(?<![\d.])'+re.escape(src)+r'(?![\d.])', proof):
+        raise RuntimeError('nft did not confirm blocking element')
+    return {'event':'wazuh-soar-block-applied','decision_id':proof_id,'ttl_seconds':TTL_SECONDS,
+            'agent':os.uname().nodename,'success':True, 'timestamp':int(time.time())}
+
+
+def main():
+    try:
+        raw = sys.stdin.readline(16384)
+        payload = json.loads(raw)
+        result = process(payload)
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(LOG), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+        with os.fdopen(fd,'a') as f:
+            f.write(json.dumps(result, sort_keys=True) + '\n')
+        return 0
+    except Exception as exc:
+        # No secret or arbitrary original payload in logs.
+        print('AEGISMESH-AR ERROR: ' + type(exc).__name__ + ' ' + str(exc)[:130], file=sys.stderr)
+        return 1
+
+if __name__ == '__main__':
+    sys.exit(main())

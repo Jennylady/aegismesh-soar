@@ -30,6 +30,8 @@ try:
     def mock_api(method,path,body,headers=None,raw=False):
         calls.append((method,path,body))
         if path.startswith('/security/'): return 'mock-jwt'
+        if method=='GET' and path.startswith('/agents?'):
+            return {'error':0,'data':{'affected_items':[{'id':'000','status':'active','os':{'name':'Ubuntu'}}]}}
         assert method == 'PUT' and path == '/active-response?agents_list=000'
         assert body['command'] == '!aegismesh-soar-proof'
         return {'error':0,'data':{'total_affected_items':1}}
@@ -37,7 +39,7 @@ try:
     bridge.local_wazuh_proof=lambda ident: ident == 'valid-proof-12345'
     result=bridge.wazuh_probe({'target':{'agent_id':'000'},'decision_id':'valid-proof-12345'})
     assert result['effect']=='wazuh_ar_verified' and result['execution_verified_on_agent']
-    assert len(calls)==2
+    assert len(calls)==3
 finally:
     bridge.wazuh_api_request,bridge.local_wazuh_proof=old_api,old_proof
     bridge.ENV.clear();bridge.ENV.update(old_env)

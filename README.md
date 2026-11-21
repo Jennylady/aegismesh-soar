@@ -118,3 +118,8 @@ La commande `aegismesh-soar network --check` réalise deux GET /health depuis l�
 
 ### Réseau Shuffle → bridge (UFW)
 Après validation `health`, si `network --check` retourne un timeout depuis Orborus et UFW est actif, utiliser en root `aegismesh-soar network --repair-shuffle --confirm`. La commande détecte passerelle, interface et CIDR de `aegismesh-shuffle_shuffle`, refuse tout bind public, ajoute une règle INPUT ciblée et teste `/health` depuis Orborus. Si le test échoue, elle retire la règle. Pour retour arrière explicite : `aegismesh-soar network --undo-shuffle --confirm`. Il faut ensuite vérifier le réseau du worker HTTP (potentiellement différent).
+
+
+### Actions opérationnelles V3.3
+
+Consulter `docs/EXECUTION-REELLE-V3.3.md`. Les tags `F2B_BAN_SERVER` et `WAZUH_BLOCK_AGENT` disposent désormais d’exécuteurs réels, mais restent soumis à l’activation explicite, à la protection des IP de gestion, aux preuves et aux listes d’agents autorisés. Le script Active Response `aegismesh-soar-block` doit être installé sur **chaque agent Linux cible**. Une acceptation par l’API Wazuh ne prouve pas à elle seule une action exécutée sur l’agent.

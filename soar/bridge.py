@@ -28,7 +28,7 @@ TAGS = {
     'F2B_TEST_BAN': 'fail2ban_test',
     'F2B_BAN_SERVER': 'fail2ban_prod',
     'WAZUH_AR_PROOF': 'wazuh_probe',
-    'WAZUH_BLOCK_AGENT': 'not_implemented',
+    'WAZUH_BLOCK_AGENT': 'wazuh_block',
     'EDR_ISOLATE': 'not_implemented',
     'AD_DISABLE_ACCOUNT': 'not_implemented',
 }
@@ -123,15 +123,34 @@ def policy(data):
         raise PermissionError('approbation explicite manquante')
     if len(data.get('evidence_ids', [])) < 2 or data.get('confidence', 0) < 0.90:
         raise PermissionError('preuves / confiance insuffisantes')
-    if tag in ('EDR_ISOLATE', 'AD_DISABLE_ACCOUNT', 'WAZUH_BLOCK_AGENT'):
+    if tag in ('EDR_ISOLATE', 'AD_DISABLE_ACCOUNT'):
         raise PermissionError('tag désactivé : action endpoint critique non intégrée')
     if tag == 'F2B_TEST_BAN' and not enabled('ENABLE_TEST_ACTIONS'):
         raise PermissionError('ENABLE_TEST_ACTIONS=false')
     if tag == 'WAZUH_AR_PROOF' and not enabled('ENABLE_TEST_ACTIONS'):
         raise PermissionError('ENABLE_TEST_ACTIONS=false')
-    if tag == 'F2B_BAN_SERVER' and not enabled('ENABLE_PROD_ACTIONS'):
+    if tag in ('F2B_BAN_SERVER', 'WAZUH_BLOCK_AGENT') and not enabled('ENABLE_PROD_ACTIONS'):
         raise PermissionError('ENABLE_PROD_ACTIONS=false')
     return TAGS[tag]
+
+
+def current_ssh_management_peers():
+    """Identify active SSH sessions before applying any live block on this host."""
+    try:
+        result=subprocess.run(['ss','-H','-tn','state','established','( sport = :22 )'],
+                              capture_output=True,text=True,timeout=4)
+    except (OSError, subprocess.TimeoutExpired):
+        raise PermissionError('Unable to check current SSH management peers') from None
+    if result.returncode:
+        raise PermissionError('SSH management inventory unavailable; live ban refused')
+    values=set()
+    for line in result.stdout.splitlines():
+        parts=line.split()
+        if len(parts)<5:continue
+        peer=parts[4].rsplit(':',1)[0].strip('[]')
+        try: values.add(ipaddress.ip_address(peer))
+        except ValueError: pass
+    return values
 
 
 def ipcheck(value, test=False):
@@ -147,6 +166,8 @@ def ipcheck(value, test=False):
     else:
         if not ip.is_global:
             raise PermissionError('IP non globale interdite (inclut LAN/VPN/loopback)')
+        if ip in current_ssh_management_peers():
+            raise PermissionError('IP de session SSH actuellement connectée : protégée')
         protected = setting('PROTECTED_CIDRS').split(',')
         if not any(x.strip() for x in protected):
             raise PermissionError('PROTECTED_CIDRS obligatoire pour les bans réels')
@@ -172,9 +193,54 @@ def f2b_set(jail, operation, ip):
         raise RuntimeError('fail2ban-client a renvoyé un échec')
 
 
+def f2b_bantime_seconds(jail):
+    p = subprocess.run(['fail2ban-client','get',jail,'bantime'],
+                       capture_output=True,text=True,timeout=8)
+    if p.returncode:
+        raise RuntimeError('Impossible de vérifier bantime de la jail SOAR')
+    try:
+        seconds=int(float(p.stdout.strip()))
+    except ValueError:
+        raise RuntimeError('bantime non numérique') from None
+    if seconds < 30 or seconds > 300:
+        raise PermissionError('Bannissement SOAR refusé : bantime doit être entre 30 et 300 secondes')
+    return seconds
+
+
+def f2b_nft_confirmed(ip):
+    """Require an nftables element in the Fail2ban SOAR jail set, not an unrelated rule.
+
+    The existing deployment has an nftables action. Fail closed if nft is not
+    queryable or uses a different/unverified set layout.
+    """
+    try:
+        proc = subprocess.run(['nft','-j','list','ruleset'],capture_output=True,text=True,timeout=10)
+        if proc.returncode:
+            return False
+        entries = json.loads(proc.stdout).get('nftables', [])
+        candidates=[]
+        referenced=set()
+        for entry in entries:
+            if 'set' in entry:
+                candidate=entry['set']
+                if 'aegismesh-soar-gcp' in str(candidate.get('name','')):
+                    candidates.append(candidate)
+            elif 'rule' in entry:
+                referenced.add(json.dumps(entry['rule'].get('expr',[])))
+        for entry in candidates:
+            name=str(entry.get('name',''))
+            elements=json.dumps(entry.get('elem',[]))
+            if name and re.search(r'(?<![\d.])'+re.escape(ip)+r'(?![\d.])', elements) and any(name in e for e in referenced):
+                return True
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        pass
+    return False
+
+
 def fail2ban_action(data, test=False):
     jail = 'aegismesh-soar-gcp'  # fixed to existing project jail; never touch sshd
     ip = ipcheck(data['target'].get('ip'), test=test)
+    bantime = f2b_bantime_seconds(jail) if not test else 120
     before = f2b_get_bans(jail)
     if ip in before:
         raise PermissionError('IP déjà bannie : refus de modifier un bannissement préexistant')
@@ -187,8 +253,13 @@ def fail2ban_action(data, test=False):
         if test:
             return {'effect': 'test_ban_and_unban', 'banned_verified': True,
                     'unban_verified': True, 'ip': ip, 'jail': jail}
+        if not f2b_nft_confirmed(ip):
+            # The jail may report an IP without installing a packet-filter rule.
+            # Roll back our newly added ban rather than reporting a false success.
+            f2b_set(jail, 'unbanip', ip)
+            raise RuntimeError('Bannissement non confirmé dans nftables : retrait de la règle Fail2ban SOAR')
         return {'effect': 'temporary_ban', 'banned_verified': True,
-                'ip': ip, 'jail': jail, 'duration_seconds': 120}
+                'nftables_verified': True, 'ip': ip, 'jail': jail, 'duration_seconds': bantime}
     finally:
         if test and applied:
             f2b_set(jail, 'unbanip', ip)
@@ -197,17 +268,75 @@ def fail2ban_action(data, test=False):
 
 
 def wazuh_api_request(method, path, body, headers=None, raw=False):
-    url = setting('WAZUH_API_URL', 'https://127.0.0.1:55000').rstrip('/') + path
-    context = ssl.create_default_context(cafile=setting('WAZUH_CA_FILE') or None)
+    """Wazuh 4.14 local HTTPS: verify TLS, using the locally installed server cert.
+
+    Wazuh's initial installation commonly uses a self-signed leaf certificate
+    without an IP SAN. For an *exact loopback* API endpoint only, trust this
+    particular installed certificate and disable hostname checking while keeping
+    certificate-chain verification on. Remote API endpoints MUST have normal TLS
+    hostname verification and an explicitly configured trusted CA.
+    """
+    base = setting('WAZUH_API_URL', 'https://127.0.0.1:55000').rstrip('/')
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme != 'https' or parsed.username or parsed.password:
+        raise ValueError('API Wazuh : URL HTTPS sans identifiants requise')
+    local = parsed.hostname in ('127.0.0.1', 'localhost', '::1') and (parsed.port or 443) == 55000
+    ca = setting('WAZUH_CA_FILE')
+    auto_pinned_local = False
+    if not ca and local:
+        default_cert = '/var/ossec/api/configuration/ssl/server.crt'
+        if os.path.isfile(default_cert):
+            ca = default_cert
+            auto_pinned_local = True
     if enabled('WAZUH_TLS_INSECURE'):
-        # explicit opt-in only; never the default
+        raise PermissionError('WAZUH_TLS_INSECURE=true interdit pour les actions SOAR')
+    context = ssl.create_default_context(cafile=ca or None)
+    if auto_pinned_local:
+        # Only a locally installed server leaf cert is trusted, never a global
+        # blanket `verify=False`. No network-accessible hostname uses this mode.
         context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-    rawdata = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(url, rawdata, headers=headers or {}, method=method)
-    with urllib.request.urlopen(req, timeout=12, context=context) as response:
-        b = response.read(32768)
-        return b.decode() if raw else json.loads(b)
+    request_data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(base + path, request_data,
+                                 headers=headers or {}, method=method)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                          urllib.request.HTTPSHandler(context=context))
+    try:
+        with opener.open(req, timeout=12) as response:
+            b = response.read(32768)
+            return b.decode() if raw else json.loads(b)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f'Wazuh HTTP {exc.code} sur {path.split("?")[0]} (droits/API)') from None
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, 'reason', None)
+        # Never print URL userinfo/passwords, tokens or sensitive server bodies.
+        desc = str(reason)[:130] if reason is not None else type(exc).__name__
+        raise ConnectionError(f'Wazuh {parsed.hostname}:{parsed.port}: {desc}') from None
+    except ssl.SSLError as exc:
+        raise ConnectionError('Wazuh TLS: '+str(exc)[:130]) from None
+
+
+def wazuh_auth_token():
+    user, pwd = setting('WAZUH_USER'), setting('WAZUH_PASSWORD')
+    if not user or not pwd:
+        raise RuntimeError('Identifiants Wazuh absents: aegismesh-soar configure wazuh')
+    basic = base64.b64encode(f'{user}:{pwd}'.encode()).decode()
+    token = wazuh_api_request('POST', '/security/user/authenticate?raw=true', None,
+                              {'Authorization': 'Basic '+basic}, raw=True).strip()
+    if not token:
+        raise RuntimeError('API Wazuh: authentification sans jeton')
+    return token
+
+
+def wazuh_agent_record(agent, token):
+    response = wazuh_api_request('GET', '/agents?agents_list='+agent+'&limit=1', None,
+                                 {'Authorization': 'Bearer '+token})
+    entries = response.get('data', {}).get('affected_items', [])
+    for item in entries:
+        if str(item.get('id')) == agent:
+            if str(item.get('status', '')).lower() != 'active':
+                raise RuntimeError('Agent Wazuh '+agent+' inactif')
+            return item
+    raise RuntimeError('Agent Wazuh '+agent+' introuvable ou accès interdit')
 
 
 def local_wazuh_proof(proof_id, *, path='/var/ossec/logs/aegismesh-soar-proof.jsonl', wait_seconds=9):
@@ -245,14 +374,8 @@ def wazuh_probe(data):
     allow = {x.strip() for x in setting('WAZUH_TEST_AGENTS', '000').split(',') if x.strip()}
     if agent not in allow:
         raise PermissionError('agent absent WAZUH_TEST_AGENTS')
-    user, pwd = setting('WAZUH_USER'), setting('WAZUH_PASSWORD')
-    if not user or not pwd:
-        raise RuntimeError('identifiants API Wazuh non configurés')
-    basic = base64.b64encode(f'{user}:{pwd}'.encode()).decode()
-    jwt = wazuh_api_request('POST', '/security/user/authenticate?raw=true', None,
-                            {'Authorization': f'Basic {basic}'}, raw=True).strip()
-    if not jwt:
-        raise RuntimeError('authentification Wazuh sans jeton')
+    jwt = wazuh_auth_token()
+    wazuh_agent_record(agent, jwt)
     body = {'command': '!aegismesh-soar-proof', 'arguments': [data['decision_id']],
             'alert': {'data': {'srcip': '198.51.100.42'}}}
     result = wazuh_api_request('PUT', '/active-response?agents_list=' + agent,
@@ -267,6 +390,44 @@ def wazuh_probe(data):
             'expected_proof_id': data['decision_id']}
 
 
+def wazuh_block_agent(data):
+    """Dispatch a real, short-lived firewall ban on an explicitly provisioned Linux agent.
+
+    The agent script uses an nftables set with a native 120-second timeout.
+    The manager can verify delivery, but not remote nftables execution: return
+    `dispatched_unverified` until separate endpoint evidence is available.
+    """
+    if enabled('WAZUH_TLS_INSECURE'):
+        raise PermissionError('TLS non vérifié interdit pour une Active Response de production')
+    target = data['target']
+    agent = target.get('agent_id')
+    if not isinstance(agent, str) or not RX_AGENT.fullmatch(agent) or agent == '000':
+        raise PermissionError('Agent Linux distant (ID 001-999) requis')
+    allow = {x.strip() for x in setting('WAZUH_PROD_AGENT_IDS').split(',') if x.strip()}
+    if agent not in allow:
+        raise PermissionError('Agent non autorisé dans WAZUH_PROD_AGENT_IDS')
+    ip = ipcheck(target.get('ip'), test=False)
+    jwt = wazuh_auth_token()
+    item = wazuh_agent_record(agent, jwt)
+    osdata = item.get('os') or {}
+    oslabel = ' '.join(str(osdata.get(k, '')) for k in ('name', 'platform', 'version')).lower()
+    if not any(x in oslabel for x in ('linux', 'ubuntu', 'debian', 'kali', 'centos',
+                                      'redhat', 'rhel', 'fedora', 'rocky', 'alma', 'suse')):
+        raise PermissionError('Agent non confirmé Linux; Windows/AD exclus de cette action')
+    # Fixed command. No free-form executable, shell, payload or URL from a decision.
+    payload = {'command': '!aegismesh-soar-block', 'arguments': [],
+               'alert': {'data': {'srcip': ip, 'decision_id': data['decision_id']}}}
+    result = wazuh_api_request('PUT', '/active-response?agents_list='+agent, payload,
+                               {'Authorization': 'Bearer '+jwt, 'Content-Type': 'application/json'})
+    block = result.get('data', {})
+    if result.get('error') or int(block.get('total_affected_items', 0)) != 1:
+        raise RuntimeError('Wazuh API refuse la distribution de l’action sur l’agent')
+    return {'effect': 'wazuh_ar_dispatched', 'agent_id': agent,
+            'script': 'aegismesh-soar-block', 'ip': ip,
+            'ttl_seconds': 120, 'agent_execution_verified': False,
+            'agent_evidence_path': '/var/ossec/logs/aegismesh-soar-ar.jsonl'}
+
+
 def execute_tag(data):
     action = policy(data)
     if action == 'record_only':
@@ -277,6 +438,8 @@ def execute_tag(data):
         return fail2ban_action(data)
     if action == 'wazuh_probe':
         return wazuh_probe(data)
+    if action == 'wazuh_block':
+        return wazuh_block_agent(data)
     raise PermissionError('action non implémentée')
 
 
@@ -407,7 +570,7 @@ class HTTP(BaseHTTPRequestHandler):
                         row = c.execute('SELECT * FROM decisions WHERE id=?', (ident,)).fetchone()
                         if not row:
                             return self.reply(404, {'error': 'unknown_decision'})
-                        if row['status'] not in ('sending', 'accepted_by_shuffle', 'action_executed'):
+                        if row['status'] not in ('sending', 'accepted_by_shuffle', 'action_executed', 'dispatched_unverified'):
                             return self.reply(409, {'error': 'decision not acknowledged by Shuffle'})
                         if row['action_status'] != 'pending':
                             if row['execution_id'] != execution_id:
@@ -427,7 +590,7 @@ class HTTP(BaseHTTPRequestHandler):
                     status, code = ('denied', 403) if isinstance(exc, PermissionError) else ('failed', 500)
                 with dbconn() as c:
                     c.execute('UPDATE decisions SET action_status=?,detail=?,status=?,updated_at=? WHERE id=?',
-                              (status, json.dumps(detail), 'action_executed', utcnow(), ident))
+                              (status, json.dumps(detail), 'dispatched_unverified' if status == 'dispatched_unverified' else 'action_executed', utcnow(), ident))
                 log('action_finished', decision_id=ident, action_status=status, tag=decision['tag'])
                 return self.reply(code, {'decision_id': ident, 'status': status, 'detail': detail})
             self.reply(404, {'error': 'not_found'})
@@ -450,7 +613,7 @@ def main():
         'DECISION_TOKEN', 'SHUFFLE_ACTION_TOKEN', 'SHUFFLE_WEBHOOK_URL', 'SOAR_BIND_HOST',
         'SOAR_PORT', 'SOAR_DB', 'ENABLE_TEST_ACTIONS', 'ENABLE_PROD_ACTIONS',
         'PROTECTED_CIDRS', 'WAZUH_TEST_AGENTS', 'WAZUH_API_URL', 'WAZUH_USER',
-        'WAZUH_PASSWORD', 'WAZUH_CA_FILE', 'WAZUH_TLS_INSECURE',
+        'WAZUH_PASSWORD', 'WAZUH_CA_FILE', 'WAZUH_TLS_INSECURE', 'WAZUH_PROD_AGENT_IDS',
         'SHUFFLE_WEBHOOK_HEADER_NAME', 'SHUFFLE_WEBHOOK_HEADER_VALUE')})
     for name in ('DECISION_TOKEN', 'SHUFFLE_ACTION_TOKEN'):
         if len(setting(name)) < 32:

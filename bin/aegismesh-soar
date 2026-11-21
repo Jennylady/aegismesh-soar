@@ -46,6 +46,7 @@ DEFAULTS = {
     'WAZUH_PASSWORD': '',
     'WAZUH_TLS_INSECURE': 'false',
     'WAZUH_CA_FILE': '',
+    'WAZUH_PROD_AGENT_IDS': '',
 }
 
 
@@ -121,7 +122,7 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py']
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py']
     for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
@@ -367,6 +368,16 @@ def configure(args):
             fail('Header ou secret invalide')
         updates = {'SHUFFLE_WEBHOOK_HEADER_NAME': name,
                    'SHUFFLE_WEBHOOK_HEADER_VALUE': value}
+    elif args.section == 'wazuh-url':
+        value=args.value or (input('URL HTTPS locale de l’API Wazuh : ').strip() if sys.stdin.isatty() else '')
+        try:
+            u=urlsplit(value)
+            addr=ipaddress.ip_address(u.hostname)
+        except (ValueError,TypeError):
+            fail('URL Wazuh invalide; utiliser https://127.0.0.1:55000 si API locale')
+        if u.scheme != 'https' or not (addr.is_loopback or addr.is_private) or u.port != 55000 or u.username or u.password or u.path or u.query or u.fragment:
+            fail('API Wazuh : HTTPS sur adresse loopback/privée, port 55000, sans chemin ni identifiants')
+        updates={'WAZUH_API_URL':value}
     elif args.section == 'wazuh-ca':
         path=Path(args.value or (input('Chemin du certificat CA Wazuh (.pem) : ').strip() if sys.stdin.isatty() else ''))
         if not path.is_absolute() or not path.is_file(): fail('Certificat CA Wazuh non trouvé (chemin absolu requis)')
@@ -374,6 +385,30 @@ def configure(args):
         try: ssl.create_default_context(cafile=str(path))
         except (OSError,ssl.SSLError) as exc: fail('Certificat CA non valide: '+type(exc).__name__)
         updates={'WAZUH_CA_FILE': str(path)}
+    elif args.section == 'production':
+        if not sys.stdin.isatty(): fail('Activation production uniquement en terminal interactif')
+        print('Actions réelles: Fail2ban sur le serveur et Wazuh AR sur agents Linux autorisés.')
+        print('Les actions sur Windows, AD, les IP privées et les IP de gestion restent exclues.')
+        cidrs=input('CIDR publics à protéger (IP de ton accès gcloud/SSH, séparés par virgules) : ').strip()
+        try:
+            networks=[ipaddress.ip_network(x.strip(), strict=False) for x in cidrs.split(',') if x.strip()]
+        except ValueError:
+            fail('Liste CIDR invalide')
+        if not networks:
+            fail('PROTECTED_CIDRS obligatoire avant toute action réelle')
+        agents=input('IDs des agents Linux autorisés (ex. 002; vide = aucun) : ').strip()
+        ids=[x.strip() for x in agents.split(',') if x.strip()]
+        if any(not re.fullmatch(r'\d{3}',x) or x == '000' for x in ids):
+            fail('IDs Wazuh invalides ou manager local interdit')
+        print('Réseaux protégés :',','.join(map(str,networks)))
+        print('Agents autorisés :',','.join(ids) or 'aucun')
+        if input('Activer les actions réelles ? Saisir ACTIVER : ').strip() != 'ACTIVER':
+            fail('Activation annulée')
+        updates={'PROTECTED_CIDRS':','.join(map(str,networks)),
+                 'WAZUH_PROD_AGENT_IDS':','.join(ids),
+                 'ENABLE_PROD_ACTIONS':'true'}
+    elif args.section == 'disable-production':
+        updates={'ENABLE_PROD_ACTIONS':'false'}
     elif args.section == 'wazuh':
         user = input('Utilisateur API Wazuh (droits minimaux) : ').strip()
         password = getpass.getpass('Mot de passe API Wazuh : ')
@@ -398,6 +433,8 @@ def configure_status():
         ('Identifiants API Wazuh','configurés' if cfg.get('WAZUH_USER') and cfg.get('WAZUH_PASSWORD') else 'à configurer'),
         ('Tests actifs',cfg.get('ENABLE_TEST_ACTIONS','false')),
         ('Actions production',cfg.get('ENABLE_PROD_ACTIONS','false')),
+        ('Agents Linux autorisés', cfg.get('WAZUH_PROD_AGENT_IDS') or 'aucun'),
+        ('Réseaux protégés', 'configurés' if cfg.get('PROTECTED_CIDRS') else 'non définis'),
         ('Base de données','configurée' if cfg.get('SOAR_DB') else 'défaut'),
     ]
     for label,val in fields:
@@ -420,10 +457,13 @@ def configure_wizard():
             ('7','Désactiver les tests de sécurité'),
             ('8','Diagnostic installations existantes'),
             ('9','Certificat CA pour API Wazuh (TLS vérifié)'),
+            ('13','Adresse HTTPS privée de l’API Wazuh (55000)'),
             ('10','Renouveler le jeton de rappel Shuffle (rotation sécurisée)'),
-            ('0','Terminer')])
+            ('11','Configurer et autoriser les remédiations de production'),
+        ('12','Désactiver immédiatement les remédiations de production'),
+        ('0','Terminer')])
         if choice in ('0',None,''): break
-        names={'2':'webhook','3':'shuffle-auth','4':'wazuh','5':'bind','6':'enable-tests','7':'disable-tests','9':'wazuh-ca'}
+        names={'2':'webhook','3':'shuffle-auth','4':'wazuh','5':'bind','6':'enable-tests','7':'disable-tests','9':'wazuh-ca','13':'wazuh-url','11':'production','12':'disable-production'}
         if choice=='1': configure_status()
         elif choice=='10': rotate_action_token()
         elif choice=='8': run_doctor()
@@ -520,7 +560,7 @@ def main():
     hp=sub.add_parser('health',help='Vérification HTTP + diagnostic si indisponible')
     hp.add_argument('--verbose',action='store_true')
     c=sub.add_parser('configure',help='Paramétrer les connexions sans écraser Wazuh/Shuffle/Fail2ban')
-    c.add_argument('section',nargs='?',choices=['status','wizard','webhook','bind','enable-tests','disable-tests','shuffle-auth','wazuh','wazuh-ca','rotate-action-token'])
+    c.add_argument('section',nargs='?',choices=['status','wizard','webhook','bind','enable-tests','disable-tests','shuffle-auth','wazuh','wazuh-ca','wazuh-url','rotate-action-token','production','disable-production'])
     c.add_argument('value',nargs='?',default='')
     rep=sub.add_parser('repo',help='GitHub public/privé : état, clé de déploiement et accès SSH')
     rep.add_argument('operation',choices=['status','prepare-private','use-ssh'])

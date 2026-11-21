@@ -82,24 +82,54 @@ def report():
 def api_wazuh_check():
     cfg = settings()
     if not cfg.get('WAZUH_USER') or not cfg.get('WAZUH_PASSWORD'):
-        raise RuntimeError('Configurer d’abord `aegismesh-soar configure wazuh`')
+        raise RuntimeError('Configurer les identifiants : aegismesh-soar configure wazuh')
     sys.path.insert(0, str(ROOT/'soar'))
     import bridge
     bridge.ENV.clear()
     bridge.ENV.update(cfg)
-    import base64
-    basic = base64.b64encode((cfg['WAZUH_USER']+':'+cfg['WAZUH_PASSWORD']).encode()).decode()
     try:
-        jwt=bridge.wazuh_api_request('POST','/security/user/authenticate?raw=true',None,
-                                      {'Authorization':'Basic '+basic},raw=True).strip()
-        if not jwt: raise RuntimeError('Jeton Wazuh vide')
-        agents=bridge.wazuh_api_request('GET','/agents?limit=1',None,
-                                       {'Authorization':'Bearer '+jwt})
+        token = bridge.wazuh_auth_token()
+        agents = bridge.wazuh_api_request('GET', '/agents?limit=1', None,
+                                          {'Authorization':'Bearer '+token})
         if agents.get('error'):
-            raise RuntimeError('L’API Wazuh a signalé une erreur')
+            raise RuntimeError('API Wazuh a signalé une erreur de lecture des agents')
     except Exception as exc:
-        raise RuntimeError(f'API Wazuh non validée : {type(exc).__name__}. Vérifier le CA TLS, les droits API et le port 55000.') from None
-    print('OK : authentification Wazuh et lecture minimale des agents validées (aucune Active Response déclenchée).')
+        raise RuntimeError(f'API Wazuh : {type(exc).__name__}: {str(exc)[:180]}') from None
+    print('OK : API Wazuh authentifiée sur HTTPS, lecture agents autorisée; ')
+    print('     certificat vérifié localement ou CA explicite. Aucune action déclenchée.')
+
+
+def agent_configuration_status():
+    cfg = settings()
+    print('Production actions :',cfg.get('ENABLE_PROD_ACTIONS', 'false'))
+    print('Wazuh agent IDs approuvés :',cfg.get('WAZUH_PROD_AGENT_IDS') or 'aucun')
+    print('Réseaux protégés :', cfg.get('PROTECTED_CIDRS') or 'NON DÉFINIS')
+    print('API Wazuh :',cfg.get('WAZUH_API_URL','https://127.0.0.1:55000'))
+    print('Certificat CA explicite :','oui' if cfg.get('WAZUH_CA_FILE') else 'non (certificat local Wazuh utilisé en loopback)')
+
+
+def operational_submit(tag, args):
+    if not args.confirm:
+        raise RuntimeError('Action réelle : ajouter --confirm après validation de l’incident et de la cible')
+    if len(args.evidence) < 2:
+        raise RuntimeError('Deux références de preuve distinctes sont obligatoires')
+    if len(set(args.evidence)) < 2:
+        raise RuntimeError('Deux preuves distinctes sont obligatoires')
+    if not 0.90 <= args.confidence <= 1:
+        raise RuntimeError('--confidence doit être compris entre 0.90 et 1')
+    cfg = settings()
+    if cfg.get('ENABLE_PROD_ACTIONS') != 'true':
+        raise RuntimeError('Actions désactivées : exécuter aegismesh-soar configure production')
+    if not cfg.get('PROTECTED_CIDRS'):
+        raise RuntimeError('Réseaux de gestion non protégés : configure production')
+    cmdline = [sys.executable, str(ROOT/'soar/soarctl.py'), 'submit',
+               '--tag',tag,'--incident-id',args.incident,
+               '--ip',args.ip,'--confidence',str(args.confidence), '--approved','--wait','40']
+    if tag == 'WAZUH_BLOCK_AGENT':
+        cmdline.extend(['--agent-id',args.agent_id])
+    for e in args.evidence:
+        cmdline.extend(['--evidence',e])
+    return subprocess.run(cmdline).returncode
 
 
 def local_proof(ident):
@@ -176,18 +206,30 @@ def guide():
 def main(argv=None):
     parser=argparse.ArgumentParser(description='Vérification de la chaîne SOAR effective')
     sub=parser.add_subparsers(dest='action',required=True)
-    for action in ('status','guide','observe','wazuh-check','wazuh-install'):
+    for action in ('status','guide','observe','wazuh-check','wazuh-connect','wazuh-install','production-status'):
         sub.add_parser(action)
     pb=sub.add_parser('wazuh-proof');pb.add_argument('--agent-id',default='000')
     ps=sub.add_parser('proof-check');ps.add_argument('decision_id')
     f=sub.add_parser('f2b-test');f.add_argument('--confirm',action='store_true')
+    f2b=sub.add_parser('ban-ip',help='Blocage réel sur le serveur principal par Fail2ban via Shuffle')
+    ar=sub.add_parser('block-agent',help='Action réelle sur agent Linux équipé du script nft temporisé')
+    for x in (f2b, ar):
+        x.add_argument('--ip',required=True,help='IPv4 publique externe suspecte')
+        x.add_argument('--incident',required=True,help='Identifiant incident réel')
+        x.add_argument('--evidence',action='append',default=[],help='Preuve distincte; fournir au moins 2 fois')
+        x.add_argument('--confidence',type=float,required=True,help='Confiance réelle fournie par le moteur de décision')
+        x.add_argument('--confirm',action='store_true',help='Autoriser une vraie remédiation')
+    ar.add_argument('--agent-id',required=True,help='ID Wazuh Linux sur liste autorisée')
     args=parser.parse_args(argv)
-    if args.action in ('observe','f2b-test','wazuh-proof','wazuh-install','wazuh-check') and os.geteuid() != 0:
+    if args.action in ('observe','f2b-test','wazuh-proof','wazuh-install','wazuh-check','wazuh-connect','ban-ip','block-agent') and os.geteuid() != 0:
         parser.error('root/sudo requis')
     try:
         if args.action=='status': report()
         elif args.action=='guide': guide()
-        elif args.action=='wazuh-check': api_wazuh_check()
+        elif args.action in ('wazuh-check','wazuh-connect'): api_wazuh_check()
+        elif args.action=='production-status': agent_configuration_status()
+        elif args.action=='ban-ip': return operational_submit('F2B_BAN_SERVER', args)
+        elif args.action=='block-agent': return operational_submit('WAZUH_BLOCK_AGENT', args)
         elif args.action=='wazuh-install':
             print('Installation du script de preuve sur le MANAGER uniquement ; aucune commande Wazuh déclenchée.')
             result=subprocess.run(['bash',str(ROOT/'ops/wazuh/install_ar_proof.sh')])
