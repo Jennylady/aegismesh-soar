@@ -121,7 +121,7 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py']
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py']
     for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
@@ -194,45 +194,70 @@ def check_repo():
 
 
 def update(check_only=False):
+    """Kali -> GitHub -> GCP only. A failed candidate never becomes the final commit.
+
+    `systemctl restart` now waits for /health via ExecStartPost in the new unit.
+    This solves the V2 race even on the very first update to this version.
+    """
     root_required()
     check_repo()
     old = cmd(['git','rev-parse','HEAD'],capture=True,cwd=ROOT).stdout.strip()
+    old_managed = controlled_unit()
+    old_ok = None
+    if old_managed:
+        old_ok = health()
+        if not old_ok:
+            ui.warn('Le bridge était déjà non sain AVANT la mise à jour; elle ne pourra pas résoudre un problème externe (port, secrets, droits).')
     print('Dépôt validé, commit courant:', old[:12])
     cmd(['git','fetch','--prune','origin','main'],cwd=ROOT)
     new = cmd(['git','rev-parse','origin/main'],capture=True,cwd=ROOT).stdout.strip()
     anc = cmd(['git','merge-base','--is-ancestor',old,new],check=False,cwd=ROOT)
     if anc.returncode: fail('La branche remote a divergé; aucun reset forcé')
     if old == new:
-        print('Déjà à jour:', old[:12]); return
+        print('Déjà à jour:', old[:12])
+        if old_managed and not old_ok:
+            health_module.print_diagnosis(load_env())
+            fail('Code à jour, mais service indisponible. Corriger la panne de démarrage, pas Git.')
+        return
     print('Mise à jour disponible:', old[:12], '→', new[:12])
     if check_only:
-        print('Mode --check: aucun fichier modifié ni service redémarré.'); return
+        print('Mode --check: aucun fichier modifié ni service redémarré.')
+        return
     cmd(['git','merge','--ff-only','origin/main'],cwd=ROOT)
     try:
         with ui.Spinner('Tests pré-déploiement'):
             tests()
         if controlled_unit():
-            # Exactly our unit and our bridge; preserve environment and other services.
+            # Only our own unit is replaced; config and secret files remain intact.
             shutil.copyfile(UNIT_SRC, UNIT_DEST)
             os.chmod(UNIT_DEST,0o644)
             cmd(['systemctl','daemon-reload'])
+            # Important: ExecStartPost gates restart until /health is REALLY ready.
             cmd(['systemctl','restart',UNIT])
-            if cmd(['systemctl','is-active','--quiet',UNIT],check=False).returncode:
-                raise RuntimeError('Service SOAR Bridge inactif après update')
             cfg=load_env()
-            ready, reason=health_module.wait_ready(cfg.get('SOAR_BIND_HOST','127.0.0.1'),cfg.get('SOAR_PORT','19081'),seconds=18)
-            if not ready:
-                health_module.print_diagnosis(cfg)
-                raise RuntimeError('Bridge /health en échec après update : '+reason)
-        print('Mise à jour réussie:', new[:12])
-    except BaseException as e:
-        print('Échec de validation, retour au code précédent :',type(e).__name__,e,file=sys.stderr)
+            ready, reason=health_module.wait_ready(cfg.get('SOAR_BIND_HOST','127.0.0.1'),
+                                                   cfg.get('SOAR_PORT','19081'),seconds=5)
+            if not ready or cmd(['systemctl','is-active','--quiet',UNIT],check=False).returncode:
+                raise RuntimeError('Pont /health indisponible malgré systemd: '+reason)
+            ui.ok('Pont SOAR confirmé par HTTP /health après systemd restart')
+        else:
+            ui.warn('Aucune unité SOAR gérée n’est installée; code mis à jour, utiliser aegismesh-soar install une fois.')
+        ui.ok('Mise à jour réussie: '+new[:12])
+    except BaseException as exc:
+        print('Validation du candidat échouée :',type(exc).__name__,str(exc),file=sys.stderr)
+        ui.warn('Diagnostic AVANT retour arrière (secrets non affichés) :')
+        health_module.print_diagnosis(load_env())
+        ui.warn('Dernières erreurs du bridge (si nécessaire): journalctl -u '+UNIT+' -n 70 --no-pager')
+        # Preserve the rollback policy; do not modify Wazuh, Shuffle, Fail2ban or relay.
         cmd(['git','reset','--hard',old],cwd=ROOT)
         if controlled_unit():
             shutil.copyfile(UNIT_SRC,UNIT_DEST)
+            os.chmod(UNIT_DEST,0o644)
             cmd(['systemctl','daemon-reload'])
-            cmd(['systemctl','restart',UNIT],check=False)
-        fail('Update annulé ; vérifier journaux propres au pont SOAR')
+            rollback = cmd(['systemctl','restart',UNIT],check=False)
+            if rollback.returncode:
+                ui.warn('ATTENTION: ancien service toujours en échec après rollback. Lire son journal systemd.')
+        fail('Update annulé : le code précédent est restauré. Consulter le diagnostic ci-dessus.')
 
 
 def configure(args):

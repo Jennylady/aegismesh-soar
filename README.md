@@ -13,42 +13,34 @@ Projet d'orchestration SOAR de **la personne 2** (Shuffle, Wazuh Active Response
 
 **Attention :** c'est un dépôt *distinct* du dépôt principal AEGISMESH. Il n'écrase ni `/opt/aegismesh/source`, ni `aegismesh-shuffle-relay`, ni Wazuh, ni Shuffle, ni Fail2ban, ni Nginx. Il utilise les services existants à travers leurs interfaces. Les credentials restent à configurer localement, jamais sur GitHub.
 
-## Installation initiale, dépôt GitHub encore vide
+## Développement et publication — uniquement sur Kali
 
-Transférer **une seule fois** l'archive à ton serveur (exemple `/tmp/AEGISMESH-SOAR-REPO-V2.zip`) :
+**Flux officiel :** modifications et tests dans `/home/lady/SOUTENANCE/aegismesh-soar` → `git commit` → `git push origin main` → `aegismesh-soar update` sur GCP. **Ne jamais extraire un ZIP ni effectuer de commit sur le serveur GCP.**
 
-```bash
-sudo mkdir -p /opt/aegismesh/soar
-sudo unzip -o /tmp/AEGISMESH-SOAR-REPO-V2.zip -d /opt/aegismesh/soar
-cd /opt/aegismesh/soar
-sudo bash ops/bootstrap.sh
-sudo aegismesh-soar doctor
-sudo aegismesh-soar health
-```
-
-`bootstrap.sh` : vérifie le chemin, initialise un dépôt Git local s'il est absent, configure `origin`, lance les tests, installe **uniquement** notre service et le CLI, génère de nouveaux secrets root-only. Il **n'effectue aucun push** et n'exécute aucune réponse de sécurité.
-
-**Premier envoi vers GitHub** (nécessite identité Git et autorisation de push du compte/clé Git configuré sur le serveur) :
+Pour appliquer un patch livré par ChatGPT, depuis **Kali** :
 
 ```bash
-cd /opt/aegismesh/soar
-git status --short
+cd /home/lady/SOUTENANCE/aegismesh-soar
+unzip -o /chemin/vers/AEGISMESH-SOAR-PATCH-V3.1.zip
+python3 bin/aegismesh-soar test
 git add -A
-git commit -m 'Initialisation AEGISMESH SOAR V2'
-git push -u origin main
+git commit -m "fix: synchronize systemd readiness with SOAR update"
+git push origin main
 ```
 
-Si Git demande `user.name` ou `user.email`, configure-les **uniquement pour ce dépôt** (`git config --local ...`). GitHub n'accepte pas le mot de passe du compte pour un push HTTPS : utiliser le mécanisme d'authentification Git déjà autorisé sur le serveur (SSH ou un credential helper sûr). Un dépôt public permet le clone, **pas un push anonyme**.
-
-## Mise à jour (plus aucun ZIP à transférer après le premier push)
+Puis, sur **le serveur GCP**, uniquement :
 
 ```bash
-sudo aegismesh-soar update --check
-sudo aegismesh-soar update
-sudo aegismesh-soar doctor
+aegismesh-soar update
+# Si le service était déjà indisponible avant la mise à jour :
+aegismesh-soar health --verbose
 ```
 
-`update` vérifie la branche `main`, l'URL GitHub du dépôt, un *working tree* propre et un historique *fast-forward*. Ensuite il exécute les tests puis **redémarre uniquement** `aegismesh-soar-bridge.service`. En cas d'échec du test/du service, retour au commit précédent de **ce dépôt uniquement**. Il n'effectue ni réinstallation Wazuh, ni changement de jail, ni modification du relais Shuffle principal.
+`update` utilise toujours fast-forward only, valide les tests et redémarre **uniquement** `aegismesh-soar-bridge.service`. Le service systemd inclut désormais `ExecStartPost`, qui attend effectivement `/health` avant que `systemctl restart` se termine. Ce mécanisme est compatible avec l'updater V2 actuellement présent sur GCP (il copie le nouveau fichier unit avant de relancer systemd).
+
+**Limite :** si le service est réellement cassé (erreur Python, port déjà occupé, configuration invalide), le contrôle doit échouer et le rollback est normal. Lire le journal du service pour connaître l'erreur exacte. Aucun patch ne doit masquer cette panne en annonçant un succès fictif.
+
+Les secrets et la base restent hors Git, dans `/etc/aegismesh-soar/` et `/var/lib/aegismesh-soar/`. Le dépôt peut devenir privé : préparer une deploy key SSH en lecture seule sur le serveur avant de modifier sa visibilité.
 
 ## CLI
 
@@ -104,3 +96,7 @@ aegismesh-soar configure      # menu guidé
 aegismesh-soar network
 aegismesh-soar repo prepare-private
 ```
+
+## Correctif V3.1 — readiness systemd et mise à jour depuis Kali
+
+Lire [docs/DEPLOIEMENT-V3.1.md](docs/DEPLOIEMENT-V3.1.md). Le patch ne déploie aucun workflow Shuffle ni action Wazuh/Fail2ban réelle.

@@ -6,11 +6,14 @@ X-Aegismesh-Soar-Managed=yes
 
 [Service]
 Type=simple
+TimeoutStartSec=45
 User=root
 Group=root
 Environment=AEGISMESH_SOAR_ENV=/etc/aegismesh-soar/soar.env
 WorkingDirectory=/opt/aegismesh/soar
 ExecStart=/usr/bin/python3 /opt/aegismesh/soar/soar/bridge.py
+# Synchronous readiness: supports old (V2) update that checks health too early.
+ExecStartPost=/usr/bin/python3 /opt/aegismesh/soar/ops/wait_ready.py --timeout 30
 Restart=on-failure
 RestartSec=5
 UMask=0077
