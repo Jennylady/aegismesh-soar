@@ -44,3 +44,13 @@
 - En cas de preuve `WAZUH_AR_PROOF` sur l'agent local `000`, le bridge recherche une preuve effective dans le journal prévu. Sinon il maintient `dispatched_unverified`.
 - Refuse un second identifiant d'exécution différent pour la même décision : prévention des doubles exécutions via deux workflows.
 - Aucun déploiement automatique de workflow existant, aucune modification de `ossec.conf`, de Shuffle Docker ni des jails Fail2ban.
+
+## 3.2.4 — Permission CLI et diagnostic Docker
+
+- Restaure et verrouille le mode Git **100755** pour `bin/aegismesh-soar`,
+  empêchant le retour de `Permission denied` après mise à jour.
+- Ajoute `aegismesh-soar network --check`, une vérification réseau lecture seule
+  de l’hôte et du namespace d’Orborus vers `/health`.
+- Ne change aucun réseau Docker, nftables, service Wazuh ni Fail2ban.
+- Permet une récupération ponctuelle avec `python3 /opt/aegismesh/soar/bin/aegismesh-soar update`
+  si le CLI déjà déployé a perdu son bit exécutable.

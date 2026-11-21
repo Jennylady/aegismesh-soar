@@ -109,3 +109,9 @@ Utiliser `aegismesh-soar chain status`, `aegismesh-soar chain guide`, puis `aegi
 ### Exploitation V3.2.3
 
 Sur le serveur GCP, consulter `aegismesh-soar logs --lines 70` ou renouveler le jeton compromis avec `aegismesh-soar configure rotate-action-token`. Reporter le nouveau secret uniquement dans l'en-tête d'authentification de l'application HTTP de Shuffle. Ne jamais le publier.
+
+### Récupération après perte du droit exécutable (V3.2.4)
+
+Le correctif se publie uniquement depuis Kali avec `git add -A && git update-index --chmod=+x bin/aegismesh-soar`, puis commit/push. Sur GCP, **une seule fois**, lancer `python3 /opt/aegismesh/soar/bin/aegismesh-soar update`. La commande directe `aegismesh-soar update` fonctionne à nouveau après ce fast-forward.
+
+La commande `aegismesh-soar network --check` réalise deux GET /health depuis l’hôte puis depuis le namespace Orborus; elle ne modifie aucun pare-feu. Un échec depuis Orborus nécessite une inspection de la politique INPUT, ainsi qu’un essai depuis le vrai worker Shuffle.
