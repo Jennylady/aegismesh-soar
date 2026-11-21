@@ -1,5 +1,12 @@
 # Journal des versions
 
+## 3.2.2 — 21 novembre 2026
+
+- Corrige le rejet des URL de webhook Shuffle émises par l’instance on-prem : accepte `/api/v1/hooks/webhook_...` et `/api/v1/webhooks/webhook_...`.
+- Conserve le filtrage des schémas, hôtes HTTP loopback, identifiants, fragments et paramètres.
+- Ajoute un test de non-régression exécuté automatiquement avant `aegismesh-soar update`.
+- Documente la distinction frontend 18031/backend 15001 et le déclencheur `Start` dans Shuffle.
+
 ## 3.1.0 — 21 novembre 2026
 
 - Nouveau `ExecStartPost`: la commande `systemctl restart` attend l’HTTP `/health` (jusqu’à 30 s). Compatible avec la mise à jour depuis la V2; supprime le faux échec de démarrage rapide.

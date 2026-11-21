@@ -40,7 +40,7 @@ sudo aegismesh-soar health --verbose
 Dans l'interface **Shuffle existante** (ne pas réinstaller) :
 
 - Créer un nouveau workflow : `AEGISMESH - Decision Dispatcher`.
-- Ajouter un déclencheur **Webhook** ; le démarrer et **copier l’URL exacte affichée par Shuffle** (selon version, le chemin peut contenir `/api/v1/hooks/webhook_<id>` ou `/api/v1/webhooks/webhook_<id>`). Ne jamais fabriquer l’identifiant.
+- Ajouter un déclencheur **Webhook** ; le démarrer et copier son URL (forme `/api/v1/hooks/webhook_<id>` ou `/api/v1/webhooks/webhook_<id>` selon la version).
 - Activer **l'authentification par en-tête requis** sur le webhook si disponible. Le bridge doit utiliser la même paire nom/secret : `aegismesh-soar configure shuffle-auth` (saisie masquée).
 - Ajouter une seule action **HTTP POST** connectée au Webhook (environnement servi par Orborus / worker local).
 - URL de l'action : `http://IP_PASSERELLE_DOCKER:19081/v1/execute`.
@@ -58,7 +58,7 @@ Dans l'interface **Shuffle existante** (ne pas réinstaller) :
 Relier ensuite le Webhook au bridge :
 
 ```bash
-sudo aegismesh-soar configure webhook 'http://127.0.0.1:15001/CHEMIN_EXACT_COPIE' 
+sudo aegismesh-soar configure webhook 'http://127.0.0.1:15001/api/v1/hooks/webhook_ID_REEL'
 sudo aegismesh-soar chain observe
 ```
 
@@ -123,3 +123,11 @@ L'action de production `F2B_BAN_SERVER` reste **désactivée**. Elle nécessiter
 - `action_executed + executed` : exécuteur a terminé (pour `OBSERVE`, pas d'action externe).
 - `action_executed + dispatched_unverified` : API Wazuh a accepté la distribution, **sans preuve d'exécution sur agent**.
 - `action_executed + failed` / `denied` : problème ou refus de politique, ne pas présenter comme succès.
+
+### Compatibilité webhook /hooks et /webhooks (V3.2.2)
+
+Le CLI accepte les deux chemins Shuffle `/api/v1/hooks/webhook_UUID` et `/api/v1/webhooks/webhook_UUID`.
+Lorsque le lien provient du frontend tunnelé `127.0.0.1:18031`, le serveur SOAR peut adresser directement le backend local sur `127.0.0.1:15001`, à condition de vérifier que ce backend sert bien le même chemin.
+**Ne pas remplacer le chemin `/hooks/` par `/webhooks/`** si ce n'est pas celui de l'instance.
+Dans l'éditeur Shuffle, `Run` exécute manuellement le graphe ; l'état `Webhook: uninitialized` signifie que le déclencheur n'est pas démarré. Faire défiler le panneau du Webhook et utiliser `Start`, puis vérifier son état.
+Ne pas envoyer un événement réel avant d'avoir configuré l'action HTTP du workflow et son authentification.

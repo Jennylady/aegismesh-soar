@@ -121,7 +121,7 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py']
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py']
     for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
@@ -260,6 +260,33 @@ def update(check_only=False):
         fail('Update annulé : le code précédent est restauré. Consulter le diagnostic ci-dessus.')
 
 
+def validate_shuffle_webhook_url(value):
+    """Accept both documented /hooks and /webhooks endpoint paths.
+
+    Validation is intentionally strict: never silently rewrite hosts, ports,
+    schemes, credentials or arbitrary URL paths. The caller can select the
+    on-host backend port (15001) when copying a frontend-generated URI (18031).
+    """
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError('URL de webhook vide ou contenant des espaces en début/fin')
+    if '\\' in value or any(c in value for c in '\r\n\t'):
+        raise ValueError('URL mal formée : coller http:// sans antislash avant :')
+    try:
+        u = urlsplit(value)
+        port = u.port   # Force validation of malformed port numbers
+    except ValueError:
+        raise ValueError('URL de webhook invalide (syntaxe ou port)') from None
+    if u.scheme not in ('http', 'https') or not u.hostname:
+        raise ValueError('URL de webhook non HTTP(S) ou sans hôte')
+    if (u.username is not None or u.password is not None or u.query or u.fragment):
+        raise ValueError('URL de webhook avec identifiants, paramètres ou fragment interdits')
+    if not re.fullmatch(r'/api/v1/(?:hooks|webhooks)/webhook_[A-Za-z0-9_-]+', u.path):
+        raise ValueError('Chemin webhook attendu : /api/v1/hooks/webhook_ID ou /api/v1/webhooks/webhook_ID')
+    if u.scheme == 'http' and u.hostname not in ('127.0.0.1', 'localhost', '::1'):
+        raise ValueError('Webhook HTTP permis uniquement en loopback; utiliser HTTPS ailleurs')
+    return value
+
+
 def configure(args):
     root_required()
     if args.section in (None,'wizard'):
@@ -273,15 +300,10 @@ def configure(args):
         if not value:
             if sys.stdin.isatty(): value=input('URL webhook Shuffle (saisie non masquée) : ').strip()
             else: fail('Utiliser configure webhook URL ou configure sans argument pour le menu')
-        try: u = urlsplit(value)
-        except ValueError: fail('URL de webhook invalide')
-        if not re.fullmatch(r'/api/v1/webhooks/webhook_[A-Za-z0-9_-]+',u.path) or u.username or u.password or u.query or u.fragment:
-            fail('URL de webhook Shuffle invalide')
-        if u.scheme not in ('http','https') or not u.hostname:
-            fail('URL webhook non HTTP(S)')
-        if u.scheme == 'http' and u.hostname not in ('127.0.0.1','localhost','::1'):
-            fail('Webhook HTTP accepté uniquement en loopback; utiliser HTTPS ailleurs')
-        updates['SHUFFLE_WEBHOOK_URL'] = value
+        try:
+            updates['SHUFFLE_WEBHOOK_URL'] = validate_shuffle_webhook_url(value)
+        except ValueError as exc:
+            fail(str(exc))
     elif args.section == 'bind':
         value=args.value or (input('Adresse IPv4 de bind : ').strip() if sys.stdin.isatty() else '')
         try: address = ipaddress.ip_address(value)
