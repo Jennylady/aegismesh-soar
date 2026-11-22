@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import socket
+import time
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,6 +23,27 @@ TEMPLATE = ROOT/'ops/wazuh/rules/aegismesh-soar-evidence.xml'
 DEST = Path('/var/ossec/etc/rules/aegismesh-soar-evidence.xml')
 BACKUPS = Path('/var/lib/aegismesh-soar/wazuh-rule-backups')
 IDS = {'119870', '119871', '119872', '119873', '119874', '119875', '119876'}
+
+
+class WazuhAPIReadinessError(RuntimeError):
+    """Rule deployment succeeded but the manager's HTTP API is not listening yet."""
+
+
+def wait_api_socket(*, timeout=55, interval=1.5, connector=None, monotonic=None, sleeper=None):
+    """Wait for Wazuh loopback port after restart; never uses insecure HTTPS options."""
+    dial=connector or socket.create_connection
+    clock=monotonic or time.monotonic
+    sleep=sleeper or time.sleep
+    deadline=clock()+timeout
+    while True:
+        try:
+            connection=dial(('127.0.0.1',55000),1.5)
+            connection.close()
+            return True
+        except (OSError,TimeoutError):
+            if clock()>=deadline:
+                return False
+            sleep(min(interval,max(deadline-clock(),0)))
 
 
 def check_collisions(dest=DEST, rules_dir=Path('/var/ossec/etc/rules')):
@@ -44,7 +67,7 @@ def command(cmd, timeout=25):
 
 
 def install(*, apply=False, confirm=False, dest=DEST, template=TEMPLATE, rules_dir=None,
-            restart=True, runner=command):
+            restart=True, runner=command, api_waiter=None):
     content=template.read_bytes()
     ET.fromstring(content)
     if not apply:
@@ -79,7 +102,14 @@ def install(*, apply=False, confirm=False, dest=DEST, template=TEMPLATE, rules_d
             ready=runner(['systemctl','is-active','--quiet','wazuh-manager.service'],timeout=15)
             if ready.returncode:
                 raise RuntimeError('Wazuh manager inactif après redémarrage')
+            waiter=api_waiter or wait_api_socket
+            if not waiter():
+                raise WazuhAPIReadinessError('Règles SOAR installées et Wazuh manager actif, mais API HTTPS 127.0.0.1:55000 indisponible après attente; exécuter aegismesh-soar ad doctor puis ad recover --confirm')
         return 'OK: règles SOAR installées et Wazuh manager validé'
+    except WazuhAPIReadinessError:
+        # Do not roll back valid alert rules or restart Wazuh again just because
+        # the separately started API daemon is late/unavailable.
+        raise
     except Exception:
         if previous is None:
             dest.unlink(missing_ok=True)

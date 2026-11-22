@@ -1,3 +1,12 @@
+## 3.9.1 — Wazuh API readiness for AD (2026-11-22)
+
+- `aegismesh-soar ad doctor`: read-only Wazuh service, local API, AD evidence rule and DC allowlist diagnosis.
+- `aegismesh-soar ad recover --confirm`: one guarded manager restart only if the local API is unavailable; refuses unsafe configuration or invalid analysis rules and verifies authenticated readiness.
+- `fleet evidence install` now also waits for the Wazuh HTTPS listener after service restart without rolling back valid rules on API-only delay.
+- `aegismesh-soar ad probe --confirm` waits for port 55000 after Wazuh rule installation before a single read-only Active Response dispatch.
+- AD status now distinguishes unconfigured DC fields from the existing pre-probe allowlist for agent 006.
+- No changes to PostgreSQL, AD accounts, the Windows executor, or production decision policy.
+
 ## 3.9.0 — PostgreSQL SOAR + validation réelle AD/LDAP sur compte de laboratoire
 
 - Commande intégrée `database migrate --apply --confirm` : provision PostgreSQL local isolé, secret root-only hors Git, sauvegarde SQLite, copie transactionnelle, empreinte SHA-256 intégrale et bascule avec contrôle de santé.

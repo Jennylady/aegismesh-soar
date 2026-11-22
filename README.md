@@ -179,3 +179,7 @@ L'API Velociraptor est interrogée en lecture seule. Un flow `FINISHED` n'impliq
 Voir [docs/POSTGRESQL-AD-LIVE-V3.9.md](docs/POSTGRESQL-AD-LIVE-V3.9.md).
 Sur GCP: `aegismesh-soar database migrate --apply --confirm` (installation PostgreSQL et migration de l'historique), puis `aegismesh-soar database status`.
 L'intégration AD passe par un compte dédié `aegis-lab-*` et `aegismesh-soar ad lab-disable --sid <SID-REEL> --confirm` après précontrôle Wazuh réel ; pas de données d'alerte ou de score IA inventées.
+
+### Wazuh API readiness after installing AD evidence rules (V3.9.1)
+
+If `ad probe` reports `Connection refused` on the local Wazuh API after a manager restart, run `aegismesh-soar ad doctor`. If the local port 55000 is not listening, `aegismesh-soar ad recover --confirm` performs one guarded Wazuh manager restart and verifies HTTPS authentication; then run `aegismesh-soar ad probe --confirm`. No AD user is modified by these commands.

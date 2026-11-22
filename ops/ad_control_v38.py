@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 import re
 import sys
+import socket
+import urllib.parse
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT/'soar'))
@@ -43,9 +45,11 @@ def status(path=CONFIG, rules_path=RULES):
     print('AD/LDAP SOAR — read-only readiness')
     print('Feature enabled:',cfg.get('ENABLE_AD_REMEDIATION') == 'true')
     print('Production enabled:',cfg.get('ENABLE_PROD_ACTIONS') == 'true')
-    print('DC Wazuh ID:',cfg.get('AD_DC_AGENT_ID') or 'not configured')
+    print('DC Wazuh ID:',cfg.get('AD_DC_AGENT_ID') or 'not configured (probe defaults to 006)')
     print('AD DNS domain:',cfg.get('AD_DOMAIN_DNS') or 'not configured')
-    print('Agent DC in Wazuh allowlist:',cfg.get('AD_DC_AGENT_ID') in cfg.get('WAZUH_WINDOWS_DC_AGENT_IDS','').split(','))
+    allowed={x.strip() for x in cfg.get('WAZUH_WINDOWS_DC_AGENT_IDS','').split(',') if x.strip()}
+    print('Probe candidate 006 allowlisted:', '006' in allowed)
+    print('Configured DC in Wazuh allowlist:', (cfg.get('AD_DC_AGENT_ID') in allowed) if cfg.get('AD_DC_AGENT_ID') else 'not yet configured')
     print('Evidence rules installed:',rules_path.is_file() and all(('id="'+r+'"') in rules_path.read_text() for r in ('119874','119875','119876')))
     print('Live DC readiness confirmed:', current_probe(cfg.get('AD_DC_AGENT_ID') or '006',cfg.get('AD_DOMAIN_DNS') or 'ad.ikom.mg'))
     print('Endpoint executor and opt-in group: VERIFY ON REAL WINDOWS DC with Test-AegisMeshAD.ps1')
@@ -60,6 +64,98 @@ def status(path=CONFIG, rules_path=RULES):
         print(row['updated_at'],row['id'],row['action_status'],'dc_proof='+str(verified))
     print('Operator AD lab window:',cfg.get('AD_LAB_UNTIL') or 'disabled / expired')
     print('No remote action sent.')
+
+
+
+
+def wazuh_api_endpoint(cfg):
+    """Permit automatic recovery only for the existing loopback Wazuh endpoint."""
+    parsed=urllib.parse.urlsplit(cfg.get('WAZUH_API_URL') or 'https://127.0.0.1:55000')
+    if parsed.scheme != 'https' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1') or (parsed.port or 443)!=55000:
+        raise PermissionError('Automated Wazuh recovery requires local HTTPS API on port 55000')
+    return ('::1' if parsed.hostname=='::1' else '127.0.0.1'), 55000
+
+
+def wazuh_port_ready(cfg, *, connect=None):
+    host,port=wazuh_api_endpoint(cfg)
+    check=connect or socket.create_connection
+    try:
+        sock=check((host,port), 1.2)
+        sock.close()
+        return True
+    except (OSError, TimeoutError):
+        return False
+
+
+def wait_wazuh_api(cfg, *, timeout=55, interval=2, connect=None, monotonic=None, sleeper=None):
+    """Wait for socket readiness only; authentication/TLS is checked separately."""
+    clock=monotonic or time.monotonic
+    sleep=sleeper or time.sleep
+    end=clock()+timeout
+    while True:
+        if wazuh_port_ready(cfg,connect=connect):
+            return True
+        if clock()>=end:
+            return False
+        sleep(min(interval,max(end-clock(),0)))
+
+
+def wazuh_doctor(*, cfg=None, rules_path=RULES, runner=None, connect=None):
+    """Only checks local Wazuh state, never restarts a service or sends AD actions."""
+    cfg=read_cfg() if cfg is None else cfg
+    run=runner or subprocess.run
+    proc=run(['systemctl','is-active','wazuh-manager.service'],capture_output=True,text=True,timeout=8)
+    active=proc.returncode==0 and proc.stdout.strip()=='active'
+    print('Wazuh manager:', 'active' if active else 'inactive/failed')
+    try:
+        healthy=wazuh_port_ready(cfg,connect=connect)
+        print('Wazuh API HTTPS loopback :55000:', 'LISTENING' if healthy else 'NOT LISTENING')
+    except PermissionError as e:
+        healthy=False
+        print('Wazuh API configuration: '+str(e))
+    hasrules=rules_path.is_file() and all(('id="'+r+'"') in rules_path.read_text() for r in ('119874','119875','119876'))
+    print('AD proof rules installed:', hasrules)
+    print('Agent 006 eligible for read-only probe:', '006' in {x.strip() for x in cfg.get('WAZUH_WINDOWS_DC_AGENT_IDS','').split(',')})
+    if not healthy:
+        print('Next: aegismesh-soar ad recover --confirm (one guarded manager restart)')
+        print('Logs if still down: journalctl -u wazuh-manager -n 50 --no-pager; tail -n 50 /var/ossec/logs/api.log')
+    else:
+        print('Next: aegismesh-soar ad probe --confirm')
+    print('No AD account modified; no remote action sent.')
+    return active and healthy
+
+
+def wazuh_recover(*, confirm, cfg=None, runner=None, connect=None, wait_fn=None, token_fn=None):
+    """Explicit one-restart repair, never rewrites Wazuh config nor changes AD."""
+    if not confirm:
+        raise PermissionError('--confirm required for restarting Wazuh manager')
+    if os.geteuid()!=0:
+        raise PermissionError('root required for Wazuh service restart')
+    cfg=read_cfg() if cfg is None else cfg
+    bridge.ENV.clear(); bridge.ENV.update(cfg)
+    if wazuh_port_ready(cfg,connect=connect):
+        # An already listening API must not be restarted for auth/TLS/config mistakes.
+        token=(token_fn or bridge.wazuh_auth_token)()
+        if not token:
+            raise RuntimeError('Wazuh authentication produced no token')
+        print('Wazuh API already healthy and authenticated: no restart required')
+        return True
+    run=runner or subprocess.run
+    test=run(['/var/ossec/bin/wazuh-analysisd','-t'],capture_output=True,text=True,timeout=35)
+    if test.returncode:
+        raise RuntimeError('Wazuh analysisd rules invalid; manager not restarted (see local Wazuh logs)')
+    result=run(['systemctl','restart','wazuh-manager.service'],capture_output=True,text=True,timeout=100)
+    if result.returncode:
+        raise RuntimeError('Wazuh manager restart failed (see journalctl -u wazuh-manager)')
+    ready=(wait_fn or wait_wazuh_api)(cfg,connect=connect)
+    if not ready:
+        raise RuntimeError('Wazuh manager restarted, but HTTPS API :55000 still unavailable; inspect /var/ossec/logs/api.log and journalctl')
+    token=(token_fn or bridge.wazuh_auth_token)()
+    if not token:
+        raise RuntimeError('Wazuh HTTPS API reachable but returned no authentication token')
+    print('Wazuh manager restarted once, API :55000 reachable and authenticated.')
+    print('No AD account modified.')
+    return True
 
 
 
@@ -186,6 +282,8 @@ def probe(*, agent='006', domain='ad.ikom.mg', wait=14, token_fn=None, request_f
     if agent not in cfg.get('WAZUH_WINDOWS_DC_AGENT_IDS','').split(','):
         raise PermissionError('DC Wazuh agent is not registered')
     bridge.ENV.clear();bridge.ENV.update(cfg)
+    if token_fn is None and not wait_wazuh_api(cfg,timeout=55):
+        raise ConnectionError('Wazuh API :55000 unavailable after readiness wait; run aegismesh-soar ad doctor then ad recover --confirm')
     ident='am-'+secrets.token_hex(12)
     jwt=(token_fn or bridge.wazuh_auth_token)()
     remote=(agent_lookup or bridge.wazuh_agent_record)(agent,jwt)
@@ -259,6 +357,9 @@ def main():
     parser=argparse.ArgumentParser(description='SOAR AD: no fabricated incidents, one-time DC feature gate')
     actions=parser.add_subparsers(dest='action',required=True)
     actions.add_parser('status')
+    actions.add_parser('doctor',help='Read-only Wazuh API and AD readiness diagnosis')
+    rr=actions.add_parser('recover',help='Explicit one-time Wazuh manager API recovery')
+    rr.add_argument('--confirm',action='store_true')
     a=actions.add_parser('enable')
     a.add_argument('--agent-id',default='006')
     a.add_argument('--domain',default='ad.ikom.mg')
@@ -277,6 +378,10 @@ def main():
         cfg=read_cfg()
         bridge.DB=cfg.get('SOAR_DB','/var/lib/aegismesh-soar/decisions.sqlite3')
         status()
+    elif args.action=='doctor':
+        wazuh_doctor()
+    elif args.action=='recover':
+        wazuh_recover(confirm=args.confirm)
     elif args.action=='probe':
         if not args.confirm: raise PermissionError('Explicit --confirm required for remote readiness probe')
         return probe(agent=args.agent_id, domain=args.domain)
