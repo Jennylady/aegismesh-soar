@@ -102,15 +102,18 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    cfg=validate_config(cfg if cfg is not None else read_json(CONF, {}))
     if query not in (READ_CLIENTS,READ_LABEL,COLLECT,SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
         raise PermissionError('VQL arbitraire refusé')
+    if cfg is None and not CONF.is_file():
+        raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')
+    cfg=validate_config(cfg if cfg is not None else read_json(CONF, {}))
     command=[cfg.get('binary','velociraptor'),'--api_config',cfg['api_config'],'query',query,'--format','jsonl']
     for k,v in (env or {}).items():
         if k!='ClientId' or not RX_CLIENT.fullmatch(str(v)):
             raise ValueError('Variable VQL non autorisée')
         command.extend(['--env',f'{k}={v}'])
-    if cfg['mode']=='docker': command=['docker','exec',cfg['container']]+command
+    # The dedicated API certificate is root-owned (0600) inside the persisted Docker volume.
+    if cfg['mode']=='docker': command=['docker','exec','--user','0',cfg['container']]+command
     try:
         run=subprocess.run(command,capture_output=True,text=True,timeout=20)
     except (OSError,subprocess.TimeoutExpired) as exc:
@@ -346,6 +349,7 @@ def main(argv=None):
         if a.action=='discover':
             print('Conteneurs Velociraptor détectés:',discovered() or 'aucun')
             print('API mTLS configurée:',CONF.exists());print('Timer actif:',timer_active())
+            print('Raccordement guidé: aegismesh-soar edr doctor')
         elif a.action=='configure':
             cfg={'mode':a.mode,'container':a.container,'api_config':a.api_config,'binary':a.binary}
             validate_config(cfg)
@@ -361,9 +365,13 @@ def main(argv=None):
             print('Baux de quarantaine SOAR:',list(read_json(LEASES,{})))
             print('La présence du label n’est pas la preuve de l’isolement effectif du réseau')
         elif a.action=='clients':
+            if not CONF.exists():
+                raise RuntimeError('API mTLS absente : exécuter edr doctor, puis edr setup ou edr bootstrap')
             for r in api_clients():
                 print(r['client_id'],r.get('hostname','?'),r.get('os','?'),r.get('labels',[]))
         elif a.action=='link-auto':
+            if not CONF.exists():
+                raise RuntimeError('API mTLS absente : exécuter edr doctor avant link-auto')
             ok,unmatched=auto_link()
             for aid,cid in ok:print('[LIE]',aid,cid)
             for aid,hostname,count in unmatched:print('[A VERIFIER]',aid,hostname,'candidats:',count)
@@ -386,6 +394,8 @@ def main(argv=None):
             mapping[a.agent_id]=a.client_id
             atomic_json(MAPPING,mapping)
         elif a.action in ('collect','quarantine-status'):
+            if not CONF.is_file():
+                raise RuntimeError('API Velociraptor absente : exécuter edr doctor puis edr setup ou edr bootstrap avant cette action')
             cid=linked(a.agent_id);valid_client(cid)
             if a.action=='quarantine-status':
                 print('Agent:',a.agent_id,'Client:',cid,'Labels:',labels_for(cid))

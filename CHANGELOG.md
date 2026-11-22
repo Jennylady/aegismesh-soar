@@ -115,3 +115,11 @@
 - Quarantaine par label Quarantine sur agent non DC, score minimum 0.95, approbation, bail 300 s, timer de retrait et opération release.
 - `EDR_ISOLATE` est désactivé par défaut et ne prétend jamais que la quarantaine a été appliquée sur le réseau du poste sans preuve d'agent.
 - Aucun secret Velociraptor dans Git, aucune réinstallation ni changement AD. Normalisation LF sur code Linux via .gitattributes.
+
+## 3.7.1 — API Velociraptor existante : raccordement automatique et refus explicites
+
+- `edr doctor` découvre un conteneur Velociraptor unique, son binaire et la configuration serveur, sans lire ni exposer les clés.
+- `edr setup --confirm` raccorde une configuration API mTLS déjà existante uniquement après deux requêtes réelles réussies.
+- `edr bootstrap --confirm --allow-restart` peut créer un compte API dédié via le serveur Docker existant **uniquement** si le certificat sera écrit dans un volume Docker persistant; attribution des rôles api/investigator et redémarrage **Velociraptor uniquement**, avec confirmation explicite. Jamais d'élévation admin silencieuse.
+- `edr clients` et `edr link-auto` expliquent l'absence de mTLS plutôt que de produire `mode doit être host ou docker`.
+- Aucune quarantaine EDR n'est activée, aucun agent n'est isolé, les services Shuffle/Wazuh/Fail2ban sont conservés.

@@ -145,3 +145,7 @@ See `docs/WINDOWS-EDR-V3.6.md`. The Wazuh 4.14 AR executor creates a temporary *
 ### V3.7 — Orchestration et Velociraptor
 
 Exécuter sur GCP `aegismesh-soar orchestrate status`, `aegismesh-soar orchestrate catalog`, `aegismesh-soar edr discover`, puis raccorder le certificat API mTLS **existant** de Velociraptor. Les tags EDR prennent leurs identifiants, confiance et preuves des décisions structurées déjà envoyées au bridge — aucune ressaisie interactive par incident. Documentation : `docs/ORCHESTRATION-EDR-V3.7.md`.
+
+### Raccorder le Velociraptor existant (V3.7.1)
+
+`aegismesh-soar edr doctor` affiche le conteneur et les chemins de configuration **sans secrets**. `aegismesh-soar edr setup --confirm` accepte une configuration API mTLS existante après test réel. Si aucune clé API n'est présente et qu'un volume Docker persistant est détecté : `aegismesh-soar edr bootstrap --confirm --allow-restart` crée une identité API limitée aux rôles `api,investigator` et redémarre **le conteneur Velociraptor uniquement**, après accord explicite. Consulter `docs/EDR-DOCKER-V3.7.1.md`.
