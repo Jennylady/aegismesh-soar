@@ -1,3 +1,10 @@
+## 3.5.0 — preuve d’exécution agent → manager
+
+- Journal dédié et collecte explicite sur Kali/Windows/AD sans changement de comportement des services critiques.
+- Deux règles d’alerte Wazuh locales, contrôlées et réversibles.
+- Réconciliation en lot des décisions par agent et identifiant, sans faux succès sur API ACK.
+- Gestion intégrée via `aegismesh-soar fleet evidence`.
+
 ## V3.4.0 — Fleet Wazuh Windows / AD / Kali
 
 - Le CLI sur Kali ne requiert pas Wazuh API; les identifiants restent sur GCP.

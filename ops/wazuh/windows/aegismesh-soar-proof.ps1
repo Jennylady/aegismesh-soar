@@ -27,6 +27,8 @@ try {
     # Default Windows Wazuh agent collects this file; no ossec.conf modification.
     [System.IO.File]::AppendAllText((Join-Path $ar 'active-responses.log'),
         ("AEGISMESH-SOAR-PROOF decision_id=$id status=executed`n"), $utf8)
+    [System.IO.File]::AppendAllText((Join-Path $ar 'aegismesh-soar-evidence.log'),
+        ("AEGISMESH-SOAR-PROOF decision_id=$id status=executed`n"), $utf8)
     exit 0
 } catch {
     # Do not log raw payload or secrets.

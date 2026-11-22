@@ -129,3 +129,7 @@ Consulter `docs/EXECUTION-REELLE-V3.3.md`. Les tags `F2B_BAN_SERVER` et `WAZUH_B
 
 Sur GCP uniquement: `aegismesh-soar fleet status`, `aegismesh-soar configure wazuh-proof-agents 001,002,006`, `aegismesh-soar configure enable-tests`, puis `aegismesh-soar fleet proof --agent-id 002`.
 Sur Kali, installer l'Active Response de preuve avec `sudo bash ops/wazuh/install_agent_proof.sh`. Sur chaque Windows, déployer `ops/wazuh/windows/*` avec l'installateur PowerShell administrateur. Le manager conserve les identifiants et le webhook Shuffle existants. Voir `docs/FLEET-WAZUH-V3.4.md`.
+
+## V3.5 - preuves réelles du parc Wazuh
+
+`aegismesh-soar fleet evidence status`, `fleet evidence install --apply --confirm` et `fleet evidence reconcile` relient les exécutions réelles des agents aux décisions Shuffle (voir `docs/PREUVES-AGENTS-V3.5.md`).

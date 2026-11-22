@@ -367,64 +367,108 @@ def local_wazuh_proof(proof_id, *, path='/var/ossec/logs/aegismesh-soar-proof.js
         time.sleep(.4)
 
 
-def wazuh_evidence(agent, decision_id, kind='proof', *, sources=None):
-    """Verify a remote result received back from Wazuh agent log collection.
 
-    A Wazuh API ACK is NOT proof of remote execution. This matches both exact
-    decision and exact Wazuh agent, and searches only bounded tails of local
-    manager archives/alerts. Missing log collection stays unverified.
+EVIDENCE_MARKER = re.compile(r'AEGISMESH-SOAR-(PROOF|BLOCK) decision_id=([A-Za-z0-9_-]{8,64}) status=(executed|blocked)')
+EVIDENCE_LOGS = ('/var/ossec/logs/alerts/alerts.json', '/var/ossec/logs/archives/archives.json')
+
+
+def collected_wazuh_evidence(pending, *, sources=None, tail_bytes=24_000_000):
+    """One bounded scan, strictly matching manager agent.id, decision and action.
+
+    The Wazuh server must have collected these lines from the endpoint into
+    alerts.json (through our dedicated rule) or archives.json. Files on agents
+    alone never imply manager-side verification.
     """
-    if not RX_AGENT.fullmatch(str(agent)) or not RX_ID.fullmatch(str(decision_id)):
-        return ''
-    label = {'proof':'AEGISMESH-SOAR-PROOF','block':'AEGISMESH-SOAR-BLOCK'}[kind]
-    expected = f'{label} decision_id={decision_id} status=' + ('executed' if kind=='proof' else 'blocked')
-    paths = sources or ['/var/ossec/logs/alerts/alerts.json', '/var/ossec/logs/archives/archives.json']
-    for path in paths:
+    wanted = {(str(agent).zfill(3), decision_id, kind) for agent, decision_id, kind in pending
+              if RX_AGENT.fullmatch(str(agent).zfill(3)) and RX_ID.fullmatch(str(decision_id))
+              and kind in ('proof', 'block')}
+    found = {}
+    if not wanted:
+        return found
+    for path in sources if sources is not None else EVIDENCE_LOGS:
         try:
-            with open(path,'rb') as stream:
-                stream.seek(0,os.SEEK_END)
-                stream.seek(max(0,stream.tell()-3_000_000))
-                for row in stream:
-                    if expected.encode('ascii') not in row:
+            with open(path, 'rb') as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell() - tail_bytes))
+                # Discard a partial line when reading only the tail.
+                if stream.tell() != 0:
+                    stream.readline()
+                for raw in stream:
+                    if b'AEGISMESH-SOAR-' not in raw:
                         continue
-                    try: event=json.loads(row)
-                    except (ValueError,UnicodeError): continue
-                    event_agent=str((event.get('agent') or {}).get('id','')).zfill(3)
-                    if event_agent != str(agent):
+                    try:
+                        event = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
                         continue
-                    if expected not in str(event.get('full_log','')):
+                    agent = str((event.get('agent') or {}).get('id', '')).zfill(3)
+                    message = event.get('full_log', '')
+                    if not isinstance(message, str):
                         continue
-                    return path
+                    for match in EVIDENCE_MARKER.finditer(message):
+                        kind = 'proof' if match.group(1) == 'PROOF' else 'block'
+                        expected_status = 'executed' if kind == 'proof' else 'blocked'
+                        key = (agent, match.group(2), kind)
+                        if match.group(3) == expected_status and key in wanted:
+                            found[key] = path
+                    if len(found) == len(wanted):
+                        return found
         except (OSError, PermissionError):
             continue
-    return ''
+    return found
+
+
+def wazuh_evidence(agent, decision_id, kind='proof', *, sources=None):
+    return collected_wazuh_evidence([(agent, decision_id, kind)], sources=sources).get(
+        (str(agent).zfill(3), decision_id, kind), '')
+
+
+def reconcile_wazuh_decisions():
+    """Promote only actions proven by Wazuh-collected endpoint events."""
+    with dbconn() as conn:
+        rows = conn.execute("SELECT id,payload,detail FROM decisions WHERE action_status='dispatched_unverified' LIMIT 250").fetchall()
+    pending = []
+    for row in rows:
+        try:
+            data = json.loads(row['payload'])
+            tag = data.get('tag')
+            if tag not in ('WAZUH_AR_PROOF', 'WAZUH_BLOCK_AGENT'):
+                continue
+            agent = str(data.get('target', {}).get('agent_id', ''))
+            kind = 'proof' if tag == 'WAZUH_AR_PROOF' else 'block'
+            pending.append((agent, row['id'], kind, row))
+        except (ValueError, TypeError, KeyError):
+            continue
+    found = collected_wazuh_evidence([(a, d, k) for a,d,k,_ in pending])
+    matched = 0
+    for agent, decision_id, kind, row in pending:
+        location = found.get((agent, decision_id, kind))
+        if not location:
+            continue
+        try:
+            details = json.loads(row['detail'] or '{}')
+            if not isinstance(details, dict):
+                details = {}
+        except (TypeError, ValueError):
+            details = {}
+        details.update({'agent_execution_verified': True, 'execution_verified_on_agent': True,
+                        'evidence_via_wazuh': 'agent_logcollector', 'evidence_source': location})
+        with dbconn() as conn:
+            result = conn.execute("UPDATE decisions SET action_status='executed',status='action_executed',detail=?,updated_at=? WHERE id=? AND action_status='dispatched_unverified'",
+                                  (json.dumps(details), utcnow(), decision_id))
+            if result.rowcount:
+                matched += 1
+                log('wazuh_agent_evidence_verified', decision_id=decision_id, agent_id=agent)
+    return {'pending': len(pending), 'verified_now': matched, 'still_unverified': len(pending)-matched}
 
 
 def wazuh_verify_loop():
-    """Reconcile pending remote Wazuh evidence; no actions dispatched here."""
+    """Continuous background reconciliation; never dispatches an action."""
     while True:
         try:
-            with dbconn() as conn:
-                pending=conn.execute("SELECT id,payload,detail FROM decisions WHERE action_status='dispatched_unverified' LIMIT 50").fetchall()
-            for row in pending:
-                data=json.loads(row['payload'])
-                tag=data.get('tag')
-                if tag not in ('WAZUH_AR_PROOF','WAZUH_BLOCK_AGENT'):
-                    continue
-                agent=str(data.get('target',{}).get('agent_id',''))
-                location=wazuh_evidence(agent,row['id'],'proof' if tag=='WAZUH_AR_PROOF' else 'block')
-                if location:
-                    details=json.loads(row['detail'] or '{}')
-                    details.update({'agent_execution_verified':True,'execution_verified_on_agent':True,
-                                    'evidence_via_wazuh':'manager_log_collector','evidence_source':location})
-                    with dbconn() as conn:
-                        conn.execute("UPDATE decisions SET action_status='executed',status='action_executed',detail=?,updated_at=? WHERE id=? AND action_status='dispatched_unverified'",
-                                    (json.dumps(details),utcnow(),row['id']))
-                    log('wazuh_agent_evidence_verified',decision_id=row['id'],agent_id=agent)
+            reconcile_wazuh_decisions()
         except Exception as exc:
-            log('wazuh_evidence_error',error_type=type(exc).__name__)
-        time.sleep(5)
-
+            log('wazuh_evidence_error', error_type=type(exc).__name__)
+        time.sleep(7)
 
 def wazuh_probe(data):
     agent = data['target'].get('agent_id')

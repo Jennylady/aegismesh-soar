@@ -122,8 +122,8 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py', ROOT/'tests/test_fleet_v34.py']
-    for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar'):
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py', ROOT/'tests/test_fleet_v34.py', ROOT/'tests/test_evidence_v35.py']
+    for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar', ROOT/'ops/fleet.py', ROOT/'ops/wazuh/install_manager_evidence.py'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
         cmd([sys.executable, str(f)])

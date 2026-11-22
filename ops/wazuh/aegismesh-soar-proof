@@ -20,6 +20,9 @@ try:
     # This is the standard Wazuh Active Response log collector input.
     with open('/var/ossec/logs/active-responses.log', 'a', encoding='utf-8') as out:
         out.write('AEGISMESH-SOAR-PROOF decision_id=' + key + ' status=executed\n')
+    # Wazuh logcollector can forward this dedicated line to the manager.
+    with open('/var/ossec/logs/aegismesh-soar-evidence.log', 'a', encoding='utf-8') as out:
+        out.write('AEGISMESH-SOAR-PROOF decision_id=' + key + ' status=executed\n')
     sys.exit(0)
 except Exception:
     sys.exit(1)

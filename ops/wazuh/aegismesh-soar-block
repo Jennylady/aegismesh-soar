@@ -122,6 +122,9 @@ def main():
         with open('/var/ossec/logs/active-responses.log','a',encoding='utf-8') as audit:
             audit.write('AEGISMESH-SOAR-BLOCK decision_id=' + result['decision_id'] +
                         ' status=blocked ttl=120\n')
+        with open('/var/ossec/logs/aegismesh-soar-evidence.log','a',encoding='utf-8') as audit:
+            audit.write('AEGISMESH-SOAR-BLOCK decision_id=' + result['decision_id'] +
+                        ' status=blocked ttl=120\n')
         return 0
     except Exception as exc:
         # No secret or arbitrary original payload in logs.

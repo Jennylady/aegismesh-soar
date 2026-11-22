@@ -77,15 +77,57 @@ def verify(agent, ident):
     return 3
 
 
+
+
+def evidence_status():
+    rules = Path('/var/ossec/etc/rules/aegismesh-soar-evidence.xml')
+    print('Règles de collecte SOAR :', 'INSTALLÉES' if rules.is_file() else 'ABSENTES')
+    for source in bridge.EVIDENCE_LOGS:
+        path=Path(source)
+        print('Manager:',source,'present='+str(path.is_file()),
+              'taille_octets='+str(path.stat().st_size if path.is_file() else 0))
+    with bridge.dbconn() as conn:
+        rows=conn.execute("SELECT id,payload,action_status FROM decisions WHERE tag IN ('WAZUH_AR_PROOF','WAZUH_BLOCK_AGENT') ORDER BY updated_at DESC LIMIT 12").fetchall()
+    print('Décisions Wazuh (dernières 12) :')
+    for row in rows:
+        try:
+            agent=json.loads(row['payload']).get('target',{}).get('agent_id','?')
+        except (ValueError,TypeError):agent='?'
+        print(' ',str(agent),row['id'],row['action_status'])
+    print('La présence du script sur l’agent ne prouve pas la collecte. Seules les alertes associées au bon agent sont acceptées.')
+
+
+def evidence_operation(args):
+    if args.evidence_action=='install':
+        sys.path.insert(0,str(ROOT/'ops/wazuh'))
+        import install_manager_evidence
+        print(install_manager_evidence.install(apply=args.apply,confirm=args.confirm))
+        return 0
+    if args.evidence_action=='status':
+        evidence_status();return 0
+    if args.evidence_action=='reconcile':
+        print('Réconciliation (aucune action distante envoyée) :')
+        print(json.dumps(bridge.reconcile_wazuh_decisions(), ensure_ascii=False,indent=2))
+        return 0
+    raise ValueError('Opération de preuve inconnue')
+
 def main():
     parser=argparse.ArgumentParser(description='AEGISMESH : parc des agents et preuves Wazuh')
     subs=parser.add_subparsers(dest='action',required=True)
     subs.add_parser('status')
     a=subs.add_parser('proof');a.add_argument('--agent-id',required=True)
     b=subs.add_parser('verify');b.add_argument('--agent-id',required=True);b.add_argument('decision_id')
+    e=subs.add_parser('evidence',help='Collecte Wazuh et réconciliation des preuves')
+    es=e.add_subparsers(dest='evidence_action',required=True)
+    ins=es.add_parser('install');ins.add_argument('--apply',action='store_true');ins.add_argument('--confirm',action='store_true')
+    es.add_parser('status')
+    es.add_parser('reconcile')
     args=parser.parse_args()
     if args.action=='proof':return proof(args.agent_id)
+    if args.action=='evidence' and args.evidence_action=='install':
+        return evidence_operation(args)
     configure_bridge()
+    if args.action=='evidence':return evidence_operation(args)
     return status() if args.action=='status' else verify(args.agent_id,args.decision_id)
 
 
