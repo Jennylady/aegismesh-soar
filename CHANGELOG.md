@@ -1,3 +1,13 @@
+## 4.2.0 — Audit sur preuves et récupération contrôlée Tenzir
+
+- `aegismesh-soar audit status` : inventaire non destructif de Docker Shuffle, Tenzir, du bridge, des timers, des décisions réellement enregistrées et de l'état EDR.
+- `aegismesh-soar audit tenzir --repair --confirm` : reconstitution strictement contrôlée du réseau manquant du conteneur Tenzir existant, refus des configurations ambiguës ou de ports publiés globalement.
+- `aegismesh-soar audit worker --confirm` : une décision `OBSERVE` réelle et sans action de sécurité; vérification du callback authentifié ainsi que observation non attributive d'éventuels workers éphémères.
+- `aegismesh-soar audit blocks [--probe --confirm]` : corrélation décisions/résultats réels et sondes existantes en lecture seule, sans inventer de preuve si un endpoint n'est pas testé.
+- `aegismesh-soar audit timers [--ensure --confirm]` : état des deux timers, installation optionnelle des seuls timers gérés.
+- `aegismesh-soar audit edr` : affiche clairement l'isolation désactivée et l'absence de preuve de filtrage réseau; exclusion du contrôleur de domaine conservée.
+- Aucun changement automatique des secrets, Wazuh, Windows, Firewalls, règles EDR ou conteneurs Shuffle lors de `update`.
+
 ## 4.1.0 — Diagnostic de la chaîne SOAR vérifiable (sans action)
 
 - `chain status` distingue le header webhook sortant facultatif du jeton de rappel Shuffle obligatoire.
