@@ -151,6 +151,7 @@ READ_FLOWS = 'SELECT * FROM flows(client_id=ClientId) LIMIT 50'
 READ_FLOW = 'SELECT * FROM flows(client_id=ClientId, flow_id=FlowId) LIMIT 2'
 READ_FLOW_DETAILS = 'SELECT get_flow(client_id=ClientId, flow_id=FlowId) AS details FROM scope() LIMIT 1'
 READ_FLOW_RESULTS = "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Generic.Client.Info/BasicInformation') LIMIT 20"
+READ_DIRECT_QUARANTINE_RESULTS = "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Windows.Remediation.Quarantine') LIMIT 100"
 TRIAGE_RESULT_QUERIES = {
     'Windows.System.Pslist': "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Windows.System.Pslist') LIMIT 20",
     'Windows.Network.Netstat': "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Windows.Network.Netstat') LIMIT 20",
@@ -231,7 +232,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,DIRECT_QUARANTINE_COLLECT,DIRECT_QUARANTINE_REMOVE,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,RM_QUARANTINE_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1', *WG_MONITOR_PATCH_QUERIES.values(), *WG_MONITOR_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PATCH_QUERIES.values()):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,DIRECT_QUARANTINE_COLLECT,DIRECT_QUARANTINE_REMOVE,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,RM_QUARANTINE_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,READ_DIRECT_QUARANTINE_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1', *WG_MONITOR_PATCH_QUERIES.values(), *WG_MONITOR_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PATCH_QUERIES.values()):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')
@@ -746,6 +747,7 @@ def flow_status(agent, flow_id=None, *, include_result=True, persist=True):
     if include_result and state=='FINISHED' and isinstance(requested,list):
         queries=[]
         if SAFE_ARTIFACT in requested: queries.append((SAFE_ARTIFACT,READ_FLOW_RESULTS))
+        if 'Windows.Remediation.Quarantine' in requested: queries.append(('Windows.Remediation.Quarantine',READ_DIRECT_QUARANTINE_RESULTS))
         queries.extend((name,query) for name,query in TRIAGE_RESULT_QUERIES.items() if name in requested)
         if queries:
             sampled={name:api_query(query,{'ClientId':cid,'FlowId':flow_id}) for name,query in queries}

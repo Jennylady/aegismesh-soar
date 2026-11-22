@@ -811,8 +811,9 @@ def main(argv=None):
     transport_parser.add_argument('--confirm',action='store_true')
     repair_parser=s.add_parser('transport-repair');repair_parser.add_argument('--agent-id',required=True)
     repair_parser.add_argument('--confirm',action='store_true')
-    for name in ('direct-doctor','direct-status'):
+    for name in ('direct-doctor','direct-status','direct-evidence'):
         sub=s.add_parser(name);sub.add_argument('--agent-id',required=True)
+    s.choices['direct-evidence'].add_argument('--flow-id',required=True)
     direct_start=s.add_parser('direct-start');direct_start.add_argument('--agent-id',required=True)
     direct_start.add_argument('--confirm',action='store_true')
     direct_start.add_argument('--console-access',action='store_true')
@@ -833,6 +834,7 @@ def main(argv=None):
             from ops import edr_direct_v4217 as direct
             if a.action=='direct-doctor':result=direct.doctor(a.agent_id)
             elif a.action=='direct-status':result=direct.status(a.agent_id)
+            elif a.action=='direct-evidence':result=direct.evidence(a.agent_id,a.flow_id)
             elif a.action=='direct-start':result=direct.start(a.agent_id, confirm=a.confirm,
                 console_access=a.console_access,recovery_task_armed=a.recovery_task_armed)
             elif a.action=='direct-release':result=direct.release(a.agent_id,confirm=a.confirm)

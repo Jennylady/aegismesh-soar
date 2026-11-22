@@ -210,6 +210,56 @@ def status(agent):
       'note':'Contrôler le journal local de secours et LDAP; flow candidat ne prouve pas l isolation'}
 
 
+def evidence(agent, flow_id):
+    """Read-only, flow-bound results of Windows quarantine (no live actions).
+
+    A FINISHED collection and a netsh success line are not proof that LDAP
+    packets were blocked. Return the complete bounded result trace so the
+    operator can correlate it with endpoint tests.
+    """
+    import hashlib
+    edr.require_root()
+    cid = _identity(agent, recovery=True)
+    edr.validate_flow_id(flow_id)
+    flow = edr.matching_flow(cid, flow_id)
+    if flow.get('request', {}).get('artifacts') != ['Windows.Remediation.Quarantine']:
+        raise PermissionError('Le FlowId ne cible pas exclusivement Windows.Remediation.Quarantine')
+    state = edr.flow_state(flow)
+    if state != 'FINISHED':
+        return {'agent_id':agent, 'client_id':cid, 'flow_id':flow_id,
+                'state':state, 'results_read':False,
+                'endpoint_network_isolation_verified':False,
+                'note':'Collecte non terminée : ne pas prétendre une preuve réseau'}
+    rows = edr.api_query(edr.READ_DIRECT_QUARANTINE_RESULTS,
+                         {'ClientId': cid, 'FlowId': flow_id})
+    if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
+        raise RuntimeError('Résultats Quarantine non structurés')
+    if len(rows) > 100:
+        raise RuntimeError('Volume de résultats supérieur à la limite de sécurité')
+    raw = json.dumps(rows,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+    messages = [str(r.get('Result','')) for r in rows]
+    low = [m.casefold() for m in messages]
+    return {
+        'agent_id':agent,'client_id':cid,'flow_id':flow_id,
+        'artifact':'Windows.Remediation.Quarantine',
+        'state':state,
+        'total_collected_rows_reported':flow.get('total_collected_rows'),
+        'result_rows_read':len(rows),
+        'results_sha256':hashlib.sha256(raw.encode('utf-8')).hexdigest(),
+        'policy_applied_reported':any('ipsec policy applied' in m for m in low),
+        'frontend_check_success_reported':any('connection test successful' in m for m in low),
+        'frontend_check_failed_reported':any('failed connection test' in m for m in low),
+        'policy_removed_reported':any('ipsec policy removed' in m for m in low),
+        'results':[{'Time':str(r.get('Time',''))[:80],
+                    'Result':str(r.get('Result',''))[:600]} for r in rows],
+        'endpoint_network_isolation_verified':False,
+        'network_restoration_verified':False,
+        'note':('Résultats du flow uniquement : les succès netsh et le contrôle frontend '
+                'ne remplacent pas les mesures LDAP pendant la quarantaine. '
+                'Le rétablissement est à vérifier sur Windows LAB.')
+    }
+
+
 def clear(agent, *, confirm=False, endpoint_restored=False):
     """Only clears a lease after explicit operator-verified endpoint recovery.
     Never removes any IPsec policy or label.

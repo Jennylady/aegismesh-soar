@@ -1,3 +1,10 @@
+## 4.2.20 — Preuves des 16 lignes de collecte EDR sans nouvel isolement
+- `edr lab-quarantine direct-evidence --agent-id 001 --flow-id F...` lit exclusivement la collecte Windows.Remediation.Quarantine sur le client Wazuh 001, vérifie le client, le FlowId, le statut terminal et l'artefact.
+- Interroge `flow_results()` avec `READ_RESULTS`, limite 100 lignes, calcule une empreinte et expose les messages horodatés (netsh / contrôle frontend). Les messages « politique appliquée » ne sont jamais déclarés preuve de coupure TCP effective.
+- `edr flow-status` échantillonne également les sorties Quarantine, au lieu de retourner `results_present:false` parce que l'artefact est ignoré.
+- Ne modifie ni ACL, ni moniteur, ni label, ni bail, ni stratégie IPsec. Aucune collecte ou isolation créée par les nouvelles commandes.
+- Le retrait reste à confirmer localement; si la politique IPsec est absente et LDAP/EDR accessibles, `direct-clear --confirm --endpoint-restored` efface seulement le bail SOAR après attestation de l'opérateur.
+
 ## 4.2.19 — ACL EDR temporaire et contrôle des autorisations
 - Vérifie EXECVE et NETWORK pour la collecte Windows.Remediation.Quarantine.
 - Élévation limitée au compte API existant; aucun rôle administrator ajouté.
