@@ -131,6 +131,19 @@ WG_MONITOR_JSON_PATCH_QUERIES = {
     for idx in range(16) for append in (False, True)
 }
 
+# V4.2.17: documented one-off Windows.Remediation.Quarantine collection.
+# This deliberately does NOT mutate any client monitoring group or label.
+# The endpoint must have its independently scheduled local recovery armed first.
+DIRECT_QUARANTINE_COLLECT = (
+    "SELECT collect_client(client_id=ClientId, artifacts=['Windows.Remediation.Quarantine'], "
+    "env=dict(PolicyName='VelociraptorQuarantine', RuleLookupTable="
+    + json.dumps(WG_LAB_RULE_TABLE) + ")) AS collection FROM scope()"
+)
+DIRECT_QUARANTINE_REMOVE = (
+    "SELECT collect_client(client_id=ClientId, artifacts=['Windows.Remediation.Quarantine'], "
+    "env=dict(PolicyName='VelociraptorQuarantine', RemovePolicy=TRUE)) "
+    "AS collection FROM scope()"
+)
 READ_QUARANTINE_LOGS = "SELECT * FROM monitoring_logs(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 3600) LIMIT 80"
 # Distinct from monitoring_logs: these rows contain netsh results and frontend check outcome.
 READ_QUARANTINE_RESULTS = "SELECT * FROM monitoring(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 3600) LIMIT 100"
@@ -218,7 +231,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,RM_QUARANTINE_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1', *WG_MONITOR_PATCH_QUERIES.values(), *WG_MONITOR_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PATCH_QUERIES.values()):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,DIRECT_QUARANTINE_COLLECT,DIRECT_QUARANTINE_REMOVE,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,RM_QUARANTINE_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1', *WG_MONITOR_PATCH_QUERIES.values(), *WG_MONITOR_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PATCH_QUERIES.values()):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')
@@ -474,8 +487,17 @@ def release_expired():
         except Exception as exc:
             failed+=1
             print('RETRAIT EN ÉCHEC agent='+str(agent)+' erreur='+type(exc).__name__,file=sys.stderr)
-    print(json.dumps({'release_count':done,'release_failed':failed}))
-    return 0 if not failed else 2
+    # The separate, operator-initiated lab flow has its own lease. Execute
+    # its expiry independently without disturbing legacy label leases.
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from ops.edr_direct_v4217 import release_expired as direct_release_expired
+        direct = direct_release_expired()
+    except Exception as exc:
+        direct = {'release_count': 0, 'release_failed': 1, 'error_class': type(exc).__name__}
+    print(json.dumps({'release_count':done,'release_failed':failed,'direct_lab':direct}))
+    return 0 if not failed and not direct['release_failed'] else 2
 
 
 def install_timer():

@@ -811,6 +811,16 @@ def main(argv=None):
     transport_parser.add_argument('--confirm',action='store_true')
     repair_parser=s.add_parser('transport-repair');repair_parser.add_argument('--agent-id',required=True)
     repair_parser.add_argument('--confirm',action='store_true')
+    for name in ('direct-doctor','direct-status'):
+        sub=s.add_parser(name);sub.add_argument('--agent-id',required=True)
+    direct_start=s.add_parser('direct-start');direct_start.add_argument('--agent-id',required=True)
+    direct_start.add_argument('--confirm',action='store_true')
+    direct_start.add_argument('--console-access',action='store_true')
+    direct_start.add_argument('--recovery-task-armed',action='store_true')
+    direct_release=s.add_parser('direct-release');direct_release.add_argument('--agent-id',required=True)
+    direct_release.add_argument('--confirm',action='store_true')
+    direct_clear=s.add_parser('direct-clear');direct_clear.add_argument('--agent-id',required=True)
+    direct_clear.add_argument('--confirm',action='store_true')
     release_parser=s.add_parser('release');release_parser.add_argument('--agent-id',required=True)
     release_parser.add_argument('--confirm',action='store_true')
     a=p.parse_args(argv)
@@ -818,6 +828,15 @@ def main(argv=None):
         if a.action=='start': result=start(a.agent_id,confirm=a.confirm,console_access=a.console_access)
         elif a.action=='status': result=status(a.agent_id)
         elif a.action=='monitor-status': result=monitor_status(a.agent_id)
+        elif a.action.startswith('direct-'):
+            from ops import edr_direct_v4217 as direct
+            if a.action=='direct-doctor':result=direct.doctor(a.agent_id)
+            elif a.action=='direct-status':result=direct.status(a.agent_id)
+            elif a.action=='direct-start':result=direct.start(a.agent_id, confirm=a.confirm,
+                console_access=a.console_access,recovery_task_armed=a.recovery_task_armed)
+            elif a.action=='direct-release':result=direct.release(a.agent_id,confirm=a.confirm)
+            elif a.action=='direct-clear':result=direct.clear(a.agent_id,confirm=a.confirm)
+            else:raise RuntimeError('Commande LAB inconnue')
         elif a.action=='monitor-ensure': result=ensure_monitor(a.agent_id,confirm=a.confirm)
         elif a.action=='transport-status': result=transport_status(a.agent_id)
         elif a.action=='transport-inspect': result=transport_inspect(a.agent_id)

@@ -1,3 +1,11 @@
+## 4.2.17 — Quarantaine EDR directe, sans modification du monitoring partagé
+- Préserve intégralement les champs Velociraptor `compiled_collector_args` et `max_upload_bytes` en ne modifiant plus la table de monitoring `Quarantine` pour le test laboratoire. Le correctif précédent refusait leur suppression à raison.
+- Nouveau mode `edr lab-quarantine direct-start`, déclenché sur le client 001 par un flow Velociraptor `Windows.Remediation.Quarantine` avec des paramètres fixes : exception WireGuard UDP, accès EDR TCP, DNS/DHCP et blocage général. Aucun label `Quarantine` posé et aucune modification de `get_client_monitoring()`.
+- Refus DC 006, contrôle d'identité, root GCP, confirmation, console de secours et attestation d'une tâche de reprise locale Windows indépendante; pas de score IA artificiel.
+- `direct-release` demande la collecte `RemovePolicy=Y`, le timer SOAR tente le retrait à 180 secondes, et une tâche Windows SYSTEM armée localement supprime la politique après 300 secondes. Le flow envoyé n'est jamais déclaré preuve de filtrage ni de restauration. Nettoyage de bail seulement après contrôle opérateur.
+- Script Windows `Arm-AegisMeshLabIpsecRecovery-v4217.ps1`: validation du poste et des privilèges, refus d'écraser une tâche inconnue, en cours ou non exécutée; réarmement d'une tâche AEGISMESH déjà exécutée uniquement; protection contre une quarantaine active, journal de reprise local.
+- Pas de modification des agents Wazuh, du DC, de GCP nftables, des autres moniteurs ou de la politique de production. Tests simulés pour vérifier le contrat; validation réelle nécessaire.
+
 ## 4.2.16 — Compatibilité sûre des métadonnées protobuf du moniteur Quarantine
 - Corrige le rejet systématique `Artefacts Quarantine non standard` : les champs protobuf additionnels sont analysés sans divulguer leurs valeurs. Seuls ceux à valeur vide/par défaut (null, false, 0, chaîne/liste/dictionnaire vide) sont tolérés pour la réparation ciblée. Toute valeur personnalisée non vide interdit strictement la suppression et apparaît par **nom uniquement** dans un diagnostic exploitable.
 - `transport-inspect` expose uniquement noms, types et statut par défaut des champs supplémentaires; jamais le contenu du monitoring ni les secrets.
