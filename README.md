@@ -137,3 +137,7 @@ Sur Kali, installer l'Active Response de preuve avec `sudo bash ops/wazuh/instal
 ### Diagnostic agent Windows 001 (V3.5.2)
 
 `aegismesh-soar fleet evidence diagnose --agent-id 001 --decision-id am-7cb8f4e2c76e13cda871c0fa` sur GCP vérifie le statut sans envoyer de commande. Sur le poste Windows, `ops/wazuh/windows/Diagnose-AegisMeshProof.ps1 -DecisionId ...` inspecte les journaux et le collecteur sans nouvelle action. Les exécuteurs Windows journalisent désormais les erreurs d'exécution sans inclure les données de la commande.
+
+
+### Windows Firewall containment V3.6
+See `docs/WINDOWS-EDR-V3.6.md`. The Wazuh 4.14 AR executor creates a temporary **remote public IPv4 only** inbound/outbound rule (120s), verifies effective firewall rules and records evidence. This is not full endpoint network isolation. Velociraptor is a separate open-source DFIR/EDR service and remains untouched; existing Wazuh proof collectors are reused.

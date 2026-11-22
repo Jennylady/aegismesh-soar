@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT/'ops/wazuh/rules/aegismesh-soar-evidence.xml'
 DEST = Path('/var/ossec/etc/rules/aegismesh-soar-evidence.xml')
 BACKUPS = Path('/var/lib/aegismesh-soar/wazuh-rule-backups')
-IDS = {'119870', '119871'}
+IDS = {'119870', '119871', '119872', '119873'}
 
 
 def check_collisions(dest=DEST, rules_dir=Path('/var/ossec/etc/rules')):
@@ -48,7 +48,7 @@ def install(*, apply=False, confirm=False, dest=DEST, template=TEMPLATE, rules_d
     content=template.read_bytes()
     ET.fromstring(content)
     if not apply:
-        return 'PREVIEW: règles 119870/119871, redémarrage Wazuh uniquement avec --apply --confirm'
+        return 'PREVIEW: règles 119870/119871/119872/119873, redémarrage Wazuh uniquement avec --apply --confirm'
     if not confirm or os.geteuid()!=0:
         raise PermissionError('root et --apply --confirm requis')
     conflicts=check_collisions(dest, rules_dir or dest.parent)

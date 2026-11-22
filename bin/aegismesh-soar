@@ -122,7 +122,7 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py', ROOT/'tests/test_fleet_v34.py', ROOT/'tests/test_evidence_v35.py', ROOT/'tests/test_windows_diagnostics_v352.py']
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py', ROOT/'tests/test_fleet_v34.py', ROOT/'tests/test_evidence_v35.py', ROOT/'tests/test_windows_diagnostics_v352.py', ROOT/'tests/test_windows_edr_v36.py']
     for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar', ROOT/'ops/fleet.py', ROOT/'ops/wazuh/install_manager_evidence.py'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
@@ -363,6 +363,23 @@ def configure(args):
         if not ids or len(ids)>15 or any(not re.fullmatch(r'\d{3}', i) for i in ids):
             fail('IDs attendus : liste de 1 à 15 identifiants Wazuh sur 3 chiffres')
         updates['WAZUH_TEST_AGENTS']=','.join(sorted(set(ids)))
+    elif args.section in ('windows-agent','windows-dc-agent'):
+        value=args.value or (input('ID Windows (3 chiffres) : ').strip() if sys.stdin.isatty() else '')
+        if not re.fullmatch(r'\d{3}',value) or value == '000':
+            fail('ID Windows requis sur trois chiffres, manager 000 interdit')
+        current=load_env()
+        ordinary={x.strip() for x in current.get('WAZUH_WINDOWS_AGENT_IDS','').split(',') if x.strip()}
+        dc={x.strip() for x in current.get('WAZUH_WINDOWS_DC_AGENT_IDS','').split(',') if x.strip()}
+        if args.section == 'windows-dc-agent':
+            if not sys.stdin.isatty() or input('Autoriser les blocages IPv4 publics cibles sur ce CONTROLEUR AD ? Ecrire AUTORISER-DC : ').strip() != 'AUTORISER-DC':
+                fail('Autorisation speciale AD refusee')
+            if value in ordinary: fail('Retirer cet ID de la liste Windows LAB avant autorisation DC')
+            dc.add(value)
+            updates={'WAZUH_WINDOWS_DC_AGENT_IDS':','.join(sorted(dc))}
+        else:
+            if value in dc: fail('Cet agent est declare DC et ne peut etre autorise comme LAB')
+            ordinary.add(value)
+            updates={'WAZUH_WINDOWS_AGENT_IDS':','.join(sorted(ordinary))}
     elif args.section == 'enable-tests':
         updates['ENABLE_TEST_ACTIONS'] = 'true'
     elif args.section == 'disable-tests':
@@ -393,8 +410,8 @@ def configure(args):
         updates={'WAZUH_CA_FILE': str(path)}
     elif args.section == 'production':
         if not sys.stdin.isatty(): fail('Activation production uniquement en terminal interactif')
-        print('Actions réelles: Fail2ban sur le serveur et Wazuh AR sur agents Linux autorisés.')
-        print('Les actions sur Windows, AD, les IP privées et les IP de gestion restent exclues.')
+        print('Actions réelles: Fail2ban sur le serveur; Wazuh AR sur Linux et Windows explicitement autorises.')
+        print('Les IP privees et IP de gestion restent interdites. Windows/DC exigent une autorisation distincte.')
         cidrs=input('CIDR publics à protéger (IP de ton accès gcloud/SSH, séparés par virgules) : ').strip()
         try:
             networks=[ipaddress.ip_network(x.strip(), strict=False) for x in cidrs.split(',') if x.strip()]
@@ -440,6 +457,8 @@ def configure_status():
         ('Tests actifs',cfg.get('ENABLE_TEST_ACTIONS','false')),
         ('Actions production',cfg.get('ENABLE_PROD_ACTIONS','false')),
         ('Agents Linux autorisés', cfg.get('WAZUH_PROD_AGENT_IDS') or 'aucun'),
+        ('Windows LAB autorisés',cfg.get('WAZUH_WINDOWS_AGENT_IDS') or 'aucun'),
+        ('Windows DC autorisés',cfg.get('WAZUH_WINDOWS_DC_AGENT_IDS') or 'aucun'),
         ('Réseaux protégés', 'configurés' if cfg.get('PROTECTED_CIDRS') else 'non définis'),
         ('Base de données','configurée' if cfg.get('SOAR_DB') else 'défaut'),
     ]
@@ -566,7 +585,7 @@ def main():
     hp=sub.add_parser('health',help='Vérification HTTP + diagnostic si indisponible')
     hp.add_argument('--verbose',action='store_true')
     c=sub.add_parser('configure',help='Paramétrer les connexions sans écraser Wazuh/Shuffle/Fail2ban')
-    c.add_argument('section',nargs='?',choices=['status','wizard','webhook','bind','enable-tests','disable-tests','shuffle-auth','wazuh','wazuh-ca','wazuh-url','rotate-action-token','production','disable-production','wazuh-proof-agents'])
+    c.add_argument('section',nargs='?',choices=['status','wizard','webhook','bind','enable-tests','disable-tests','shuffle-auth','wazuh','wazuh-ca','wazuh-url','rotate-action-token','production','disable-production','wazuh-proof-agents','windows-agent','windows-dc-agent'])
     c.add_argument('value',nargs='?',default='')
     rep=sub.add_parser('repo',help='GitHub public/privé : état, clé de déploiement et accès SSH')
     rep.add_argument('operation',choices=['status','prepare-private','use-ssh'])

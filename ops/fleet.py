@@ -68,8 +68,9 @@ def verify(agent, ident):
         raise ValueError('Identifiant agent/décision invalide')
     proofpath=bridge.wazuh_evidence(agent,ident,'proof')
     blockpath=bridge.wazuh_evidence(agent,ident,'block')
-    if proofpath or blockpath:
-        print('EXÉCUTION AGENT VÉRIFIÉE via',proofpath or blockpath)
+    winpath=bridge.wazuh_evidence(agent,ident,'winblock')
+    if proofpath or blockpath or winpath:
+        print('EXÉCUTION AGENT VÉRIFIÉE via',proofpath or blockpath or winpath)
         print('Agent:',agent,'Décision:',ident)
         return 0
     print('PAS DE PREUVE MANAGER : vérifier le fichier active-responses.log sur l’agent concerné.')
@@ -87,7 +88,7 @@ def evidence_status():
         print('Manager:',source,'present='+str(path.is_file()),
               'taille_octets='+str(path.stat().st_size if path.is_file() else 0))
     with bridge.dbconn() as conn:
-        rows=conn.execute("SELECT id,payload,action_status FROM decisions WHERE tag IN ('WAZUH_AR_PROOF','WAZUH_BLOCK_AGENT') ORDER BY updated_at DESC LIMIT 12").fetchall()
+        rows=conn.execute("SELECT id,payload,action_status FROM decisions WHERE tag IN ('WAZUH_AR_PROOF','WAZUH_BLOCK_AGENT','WINDOWS_BLOCK_IP') ORDER BY updated_at DESC LIMIT 12").fetchall()
     print('Décisions Wazuh (dernières 12) :')
     for row in rows:
         try:
@@ -112,7 +113,7 @@ def evidence_diagnose(agent, decision_id):
     print('Agent Wazuh:',agent,'Decision:',decision_id)
     print('Action demandee:',payload.get('tag'),'Etat SOAR:',row['action_status'])
     print('Regle de preuve installee:',Path('/var/ossec/etc/rules/aegismesh-soar-evidence.xml').is_file())
-    kind='block' if payload.get('tag') == 'WAZUH_BLOCK_AGENT' else 'proof'
+    kind='winblock' if payload.get('tag') == 'WINDOWS_BLOCK_IP' else ('block' if payload.get('tag') == 'WAZUH_BLOCK_AGENT' else 'proof')
     found=bridge.wazuh_evidence(agent,decision_id,kind)
     if found:
         print('PREUVE RECUE ET ATTRIBUEE au bon agent depuis:',found)
@@ -124,6 +125,25 @@ def evidence_diagnose(agent, decision_id):
         print('Si le journal local est vide: examiner ossec.log et le lanceur Active Response.')
     return 0
 
+
+def windows_firewall_status(agent, decision_id):
+    """Read-only actual Windows firewall application and expiration evidence."""
+    if not re.fullmatch(r'\d{3}', agent) or not bridge.RX_ID.fullmatch(decision_id):
+        raise ValueError('Identifiant agent ou decision invalide')
+    with bridge.dbconn() as conn:
+        item=conn.execute('SELECT tag,payload,action_status FROM decisions WHERE id=?', (decision_id,)).fetchone()
+    if not item or item['tag']!='WINDOWS_BLOCK_IP' or json.loads(item['payload'])['target'].get('agent_id')!=agent:
+        raise PermissionError('Decision non associee a cet agent Windows')
+    applied=bridge.wazuh_evidence(agent,decision_id,'winblock')
+    removed=bridge.wazuh_evidence(agent,decision_id,'winunblock')
+    print('Agent:',agent,'Decision:',decision_id,'Statut SOAR:',item['action_status'])
+    print('Regles Windows confirmees via Wazuh:',bool(applied))
+    print('Retrait TTL confirme via Wazuh:',bool(removed))
+    if removed and not applied:
+        print('ALERTE: retrait signale sans preuve de creation dans les journaux accessibles')
+    if not removed:
+        print('ATTENTION: absence de preuve de suppression ne prouve pas le maintien du blocage.')
+    return 0
 
 def evidence_operation(args):
     if args.evidence_action=='install':
@@ -145,6 +165,9 @@ def main():
     parser=argparse.ArgumentParser(description='AEGISMESH : parc des agents et preuves Wazuh')
     subs=parser.add_subparsers(dest='action',required=True)
     subs.add_parser('status')
+    fw=subs.add_parser('firewall-status',help='Verifier creation et expiration du blocage Windows via Wazuh')
+    fw.add_argument('--agent-id',required=True)
+    fw.add_argument('--decision-id',required=True)
     a=subs.add_parser('proof');a.add_argument('--agent-id',required=True)
     b=subs.add_parser('verify');b.add_argument('--agent-id',required=True);b.add_argument('decision_id')
     e=subs.add_parser('evidence',help='Collecte Wazuh et réconciliation des preuves')
@@ -157,6 +180,8 @@ def main():
     di.add_argument('--decision-id', required=True)
     args=parser.parse_args()
     if args.action=='proof':return proof(args.agent_id)
+    if args.action=='firewall-status':
+        configure_bridge();return windows_firewall_status(args.agent_id,args.decision_id)
     if args.action=='evidence' and args.evidence_action=='install':
         return evidence_operation(args)
     configure_bridge()

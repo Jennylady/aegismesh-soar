@@ -26,7 +26,7 @@ def main():
     sub = ap.add_subparsers(dest='command', required=True)
     submit = sub.add_parser('submit')
     submit.add_argument('--tag', required=True, choices=['OBSERVE','ENRICH','F2B_TEST_BAN','F2B_BAN_SERVER',
-                                                         'WAZUH_AR_PROOF','WAZUH_BLOCK_AGENT','EDR_ISOLATE','AD_DISABLE_ACCOUNT'])
+                                                         'WAZUH_AR_PROOF','WAZUH_BLOCK_AGENT','WINDOWS_BLOCK_IP','EDR_ISOLATE','AD_DISABLE_ACCOUNT'])
     submit.add_argument('--incident-id', default='manual-soar-validation')
     submit.add_argument('--ip', default='')
     submit.add_argument('--agent-id', default='')

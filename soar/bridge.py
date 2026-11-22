@@ -29,6 +29,7 @@ TAGS = {
     'F2B_BAN_SERVER': 'fail2ban_prod',
     'WAZUH_AR_PROOF': 'wazuh_probe',
     'WAZUH_BLOCK_AGENT': 'wazuh_block',
+    'WINDOWS_BLOCK_IP': 'windows_firewall_block',
     'EDR_ISOLATE': 'not_implemented',
     'AD_DISABLE_ACCOUNT': 'not_implemented',
 }
@@ -129,7 +130,7 @@ def policy(data):
         raise PermissionError('ENABLE_TEST_ACTIONS=false')
     if tag == 'WAZUH_AR_PROOF' and not enabled('ENABLE_TEST_ACTIONS'):
         raise PermissionError('ENABLE_TEST_ACTIONS=false')
-    if tag in ('F2B_BAN_SERVER', 'WAZUH_BLOCK_AGENT') and not enabled('ENABLE_PROD_ACTIONS'):
+    if tag in ('F2B_BAN_SERVER', 'WAZUH_BLOCK_AGENT', 'WINDOWS_BLOCK_IP') and not enabled('ENABLE_PROD_ACTIONS'):
         raise PermissionError('ENABLE_PROD_ACTIONS=false')
     return TAGS[tag]
 
@@ -368,7 +369,7 @@ def local_wazuh_proof(proof_id, *, path='/var/ossec/logs/aegismesh-soar-proof.js
 
 
 
-EVIDENCE_MARKER = re.compile(r'AEGISMESH-SOAR-(PROOF|BLOCK) decision_id=([A-Za-z0-9_-]{8,64}) status=(executed|blocked)')
+EVIDENCE_MARKER = re.compile(r'AEGISMESH-SOAR-(PROOF|BLOCK|WINBLOCK|WINUNBLOCK) decision_id=([A-Za-z0-9_-]{8,64}) status=(executed|blocked|removed)')
 EVIDENCE_LOGS = ('/var/ossec/logs/alerts/alerts.json', '/var/ossec/logs/archives/archives.json')
 
 
@@ -381,7 +382,7 @@ def collected_wazuh_evidence(pending, *, sources=None, tail_bytes=24_000_000):
     """
     wanted = {(str(agent).zfill(3), decision_id, kind) for agent, decision_id, kind in pending
               if RX_AGENT.fullmatch(str(agent).zfill(3)) and RX_ID.fullmatch(str(decision_id))
-              and kind in ('proof', 'block')}
+              and kind in ('proof', 'block', 'winblock', 'winunblock')}
     found = {}
     if not wanted:
         return found
@@ -405,8 +406,8 @@ def collected_wazuh_evidence(pending, *, sources=None, tail_bytes=24_000_000):
                     if not isinstance(message, str):
                         continue
                     for match in EVIDENCE_MARKER.finditer(message):
-                        kind = 'proof' if match.group(1) == 'PROOF' else 'block'
-                        expected_status = 'executed' if kind == 'proof' else 'blocked'
+                        kind = {'PROOF':'proof', 'BLOCK':'block', 'WINBLOCK':'winblock', 'WINUNBLOCK':'winunblock'}[match.group(1)]
+                        expected_status = 'executed' if kind == 'proof' else ('removed' if kind == 'winunblock' else 'blocked')
                         key = (agent, match.group(2), kind)
                         if match.group(3) == expected_status and key in wanted:
                             found[key] = path
@@ -431,10 +432,10 @@ def reconcile_wazuh_decisions():
         try:
             data = json.loads(row['payload'])
             tag = data.get('tag')
-            if tag not in ('WAZUH_AR_PROOF', 'WAZUH_BLOCK_AGENT'):
+            if tag not in ('WAZUH_AR_PROOF', 'WAZUH_BLOCK_AGENT', 'WINDOWS_BLOCK_IP'):
                 continue
             agent = str(data.get('target', {}).get('agent_id', ''))
-            kind = 'proof' if tag == 'WAZUH_AR_PROOF' else 'block'
+            kind = 'proof' if tag == 'WAZUH_AR_PROOF' else ('winblock' if tag == 'WINDOWS_BLOCK_IP' else 'block')
             pending.append((agent, row['id'], kind, row))
         except (ValueError, TypeError, KeyError):
             continue
@@ -544,6 +545,49 @@ def wazuh_block_agent(data):
             'agent_evidence_path': '/var/ossec/logs/aegismesh-soar-ar.jsonl'}
 
 
+def wazuh_block_windows(data):
+    """Bounded Windows Firewall containment; never full-machine isolation.
+
+    DCs must be explicitly allowlisted separately. Execution is only considered
+    successful after the manager collects a matching endpoint confirmation.
+    """
+    if enabled('WAZUH_TLS_INSECURE'):
+        raise PermissionError('Wazuh TLS verification obligatoire')
+    target = data['target']
+    agent = target.get('agent_id')
+    if not isinstance(agent, str) or not RX_AGENT.fullmatch(agent) or agent == '000':
+        raise PermissionError('ID agent Windows distant invalide')
+    standard = {x.strip() for x in setting('WAZUH_WINDOWS_AGENT_IDS').split(',') if x.strip()}
+    domain_controllers = {x.strip() for x in setting('WAZUH_WINDOWS_DC_AGENT_IDS').split(',') if x.strip()}
+    if standard & domain_controllers:
+        raise PermissionError('Agent declare Windows LAB et DC simultanement : refus')
+    if agent not in standard and agent not in domain_controllers:
+        raise PermissionError('Agent Windows non autorise dans la politique SOAR')
+    ip = ipcheck(target.get('ip'), test=False)
+    token = wazuh_auth_token()
+    record = wazuh_agent_record(agent, token)
+    info = record.get('os') or {}
+    label = ' '.join(str(info.get(k, '')) for k in ('name', 'platform', 'version')).lower()
+    if 'windows' not in label:
+        raise PermissionError('La machine cible ne declare pas Windows dans Wazuh')
+    # Force an on-endpoint role check as well; DC permission cannot be inferred
+    # from an arbitrary target field sent by incident analysis.
+    body = {'command': '!aegismesh-soar-firewall.cmd', 'arguments': [],
+            'alert': {'data': {'srcip': ip, 'decision_id': data['decision_id'],
+                               'dc_approved': agent in domain_controllers}}}
+    result = wazuh_api_request('PUT', '/active-response?agents_list='+agent, body,
+                               {'Authorization':'Bearer '+token, 'Content-Type':'application/json'})
+    info = result.get('data') or {}
+    if result.get('error') or int(info.get('total_affected_items', 0)) != 1:
+        raise RuntimeError('Wazuh API : distribution Windows non confirmee')
+    source = wazuh_evidence(agent, data['decision_id'], 'winblock')
+    return {'effect': 'wazuh_ar_verified' if source else 'wazuh_ar_dispatched',
+            'agent_id': agent, 'executor':'aegismesh-soar-firewall.cmd',
+            'duration_seconds':120, 'agent_execution_verified':bool(source),
+            'evidence_source':source or None, 'containment':'remote_ipv4_only',
+            'domain_controller_policy': agent in domain_controllers}
+
+
 def execute_tag(data):
     action = policy(data)
     if action == 'record_only':
@@ -556,6 +600,8 @@ def execute_tag(data):
         return wazuh_probe(data)
     if action == 'wazuh_block':
         return wazuh_block_agent(data)
+    if action == 'windows_firewall_block':
+        return wazuh_block_windows(data)
     raise PermissionError('action non implémentée')
 
 
@@ -730,6 +776,7 @@ def main():
         'SOAR_PORT', 'SOAR_DB', 'ENABLE_TEST_ACTIONS', 'ENABLE_PROD_ACTIONS',
         'PROTECTED_CIDRS', 'WAZUH_TEST_AGENTS', 'WAZUH_API_URL', 'WAZUH_USER',
         'WAZUH_PASSWORD', 'WAZUH_CA_FILE', 'WAZUH_TLS_INSECURE', 'WAZUH_PROD_AGENT_IDS',
+        'WAZUH_WINDOWS_AGENT_IDS', 'WAZUH_WINDOWS_DC_AGENT_IDS',
         'SHUFFLE_WEBHOOK_HEADER_NAME', 'SHUFFLE_WEBHOOK_HEADER_VALUE')})
     for name in ('DECISION_TOKEN', 'SHUFFLE_ACTION_TOKEN'):
         if len(setting(name)) < 32:

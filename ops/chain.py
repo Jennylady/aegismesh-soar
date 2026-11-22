@@ -103,6 +103,8 @@ def agent_configuration_status():
     cfg = settings()
     print('Production actions :',cfg.get('ENABLE_PROD_ACTIONS', 'false'))
     print('Wazuh agent IDs approuvés :',cfg.get('WAZUH_PROD_AGENT_IDS') or 'aucun')
+    print('Windows LAB autorisés :',cfg.get('WAZUH_WINDOWS_AGENT_IDS') or 'aucun')
+    print('Windows DC autorisés :',cfg.get('WAZUH_WINDOWS_DC_AGENT_IDS') or 'aucun')
     print('Réseaux protégés :', cfg.get('PROTECTED_CIDRS') or 'NON DÉFINIS')
     print('API Wazuh :',cfg.get('WAZUH_API_URL','https://127.0.0.1:55000'))
     print('Certificat CA explicite :','oui' if cfg.get('WAZUH_CA_FILE') else 'non (certificat local Wazuh utilisé en loopback)')
@@ -125,7 +127,7 @@ def operational_submit(tag, args):
     cmdline = [sys.executable, str(ROOT/'soar/soarctl.py'), 'submit',
                '--tag',tag,'--incident-id',args.incident,
                '--ip',args.ip,'--confidence',str(args.confidence), '--approved','--wait','40']
-    if tag == 'WAZUH_BLOCK_AGENT':
+    if tag in ('WAZUH_BLOCK_AGENT','WINDOWS_BLOCK_IP'):
         cmdline.extend(['--agent-id',args.agent_id])
     for e in args.evidence:
         cmdline.extend(['--evidence',e])
@@ -206,30 +208,33 @@ def guide():
 def main(argv=None):
     parser=argparse.ArgumentParser(description='Vérification de la chaîne SOAR effective')
     sub=parser.add_subparsers(dest='action',required=True)
-    for action in ('status','guide','observe','wazuh-check','wazuh-connect','wazuh-install','production-status'):
+    for action in ('status','guide','observe','wazuh-check','wazuh-connect','wazuh-install','production-status','windows-status'):
         sub.add_parser(action)
     pb=sub.add_parser('wazuh-proof');pb.add_argument('--agent-id',default='000')
     ps=sub.add_parser('proof-check');ps.add_argument('decision_id')
     f=sub.add_parser('f2b-test');f.add_argument('--confirm',action='store_true')
     f2b=sub.add_parser('ban-ip',help='Blocage réel sur le serveur principal par Fail2ban via Shuffle')
     ar=sub.add_parser('block-agent',help='Action réelle sur agent Linux équipé du script nft temporisé')
-    for x in (f2b, ar):
+    win=sub.add_parser('block-windows',help='Bloquer une IPv4 publique sur Windows pendant 120 secondes (pas d isolation totale)')
+    for x in (f2b, ar, win):
         x.add_argument('--ip',required=True,help='IPv4 publique externe suspecte')
         x.add_argument('--incident',required=True,help='Identifiant incident réel')
         x.add_argument('--evidence',action='append',default=[],help='Preuve distincte; fournir au moins 2 fois')
         x.add_argument('--confidence',type=float,required=True,help='Confiance réelle fournie par le moteur de décision')
         x.add_argument('--confirm',action='store_true',help='Autoriser une vraie remédiation')
     ar.add_argument('--agent-id',required=True,help='ID Wazuh Linux sur liste autorisée')
+    win.add_argument('--agent-id',required=True,help='ID Wazuh Windows autorise')
     args=parser.parse_args(argv)
-    if args.action in ('observe','f2b-test','wazuh-proof','wazuh-install','wazuh-check','wazuh-connect','ban-ip','block-agent') and os.geteuid() != 0:
+    if args.action in ('observe','f2b-test','wazuh-proof','wazuh-install','wazuh-check','wazuh-connect','ban-ip','block-agent','block-windows') and os.geteuid() != 0:
         parser.error('root/sudo requis')
     try:
         if args.action=='status': report()
         elif args.action=='guide': guide()
         elif args.action in ('wazuh-check','wazuh-connect'): api_wazuh_check()
-        elif args.action=='production-status': agent_configuration_status()
+        elif args.action in ('production-status','windows-status'): agent_configuration_status()
         elif args.action=='ban-ip': return operational_submit('F2B_BAN_SERVER', args)
         elif args.action=='block-agent': return operational_submit('WAZUH_BLOCK_AGENT', args)
+        elif args.action=='block-windows': return operational_submit('WINDOWS_BLOCK_IP', args)
         elif args.action=='wazuh-install':
             print('Installation du script de preuve sur le MANAGER uniquement ; aucune commande Wazuh déclenchée.')
             result=subprocess.run(['bash',str(ROOT/'ops/wazuh/install_ar_proof.sh')])

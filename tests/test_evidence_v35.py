@@ -33,7 +33,7 @@ def run():
     sys.path.insert(0,str(ROOT/'ops/wazuh'))
     import install_manager_evidence as manager
     assert 'PREVIEW' in manager.install()
-    assert manager.IDS=={'119870','119871'}
+    assert manager.IDS=={'119870','119871','119872','119873'}
     assert 'aegismesh-soar-evidence.log' in (ROOT/'ops/wazuh/install_agent_proof.sh').read_text()
     assert 'aegismesh-soar-evidence.log' in (ROOT/'ops/wazuh/windows/Install-AegisMeshProof.ps1').read_text()
     assert 'wazuh_verify_loop' in (ROOT/'soar/bridge.py').read_text()

@@ -1,3 +1,10 @@
+## V3.6.0 — Windows response via Wazuh Active Response + Windows Firewall
+- Windows action `WINDOWS_BLOCK_IP` uses the verified Shuffle → bridge → Wazuh workflow, targeting only a single public IPv4 for 120 seconds.
+- Windows LAB and DC agents have separate allowlists. Domain Controllers require explicit consent on both manager and endpoint; EDR_ISOLATE remains disabled.
+- Two scoped Windows Firewall rules (in/out) with SYSTEM scheduled automatic rollback; local ActiveStore verification and Wazuh evidence rules 119872/119873 for block and scheduled removal evidence.
+- Windows endpoint installer, cleanup, read-only Wazuh/Velociraptor/Sysmon service status. No service reinstall.
+- Windows operation `chain block-windows` and statuses; guardrails and offline regressions.
+
 ## 3.5.2 — Diagnostic ciblé Windows 001 et observabilité Active Response
 
 - Nouveau `aegismesh-soar fleet evidence diagnose --agent-id 001 --decision-id <ID>` : lecture seule, refuse les incohérences agent/décision et ne déclenche aucune action distante.
