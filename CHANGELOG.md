@@ -1,3 +1,11 @@
+## 3.9.2 — AD lab : appel sur interface locale Docker (2026-11-22)
+
+- Corrige `Bridge non-local` lorsque `SOAR_BIND_HOST` est la véritable passerelle Docker locale au lieu de `127.0.0.1`.
+- Vérifie que l'adresse IPv4 d'écoute est réellement attribuée à une interface GCP (`ip -j address show`), sans DNS, sans URL distante et sans modifier les restrictions réseau.
+- Utilise le même point d'accès local pour `/health` et `POST /v1/decisions`, avec le jeton SOAR privé existant.
+- Vérifie la santé HTTP **avant** de modifier `AD_LAB_UNTIL`; garde le ciblage SID du vrai compte, les protections AD et l'étape Shuffle/Wazuh inchangés.
+- Test unitaire fail-closed des interfaces locales, des adresses distantes et de la séquence de soumission. Aucun compte AD modifié par les tests.
+
 ## 3.9.1 — Wazuh API readiness for AD (2026-11-22)
 
 - `aegismesh-soar ad doctor`: read-only Wazuh service, local API, AD evidence rule and DC allowlist diagnosis.

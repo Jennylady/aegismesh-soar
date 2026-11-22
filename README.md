@@ -183,3 +183,7 @@ L'intégration AD passe par un compte dédié `aegis-lab-*` et `aegismesh-soar a
 ### Wazuh API readiness after installing AD evidence rules (V3.9.1)
 
 If `ad probe` reports `Connection refused` on the local Wazuh API after a manager restart, run `aegismesh-soar ad doctor`. If the local port 55000 is not listening, `aegismesh-soar ad recover --confirm` performs one guarded Wazuh manager restart and verifies HTTPS authentication; then run `aegismesh-soar ad probe --confirm`. No AD user is modified by these commands.
+
+### Correctif V3.9.2 — Soumission du test AD sur la passerelle Docker locale
+
+`aegismesh-soar ad lab-disable --sid <SID réel> --confirm` fonctionne si `SOAR_BIND_HOST` est une adresse IPv4 **appartenant à une interface du serveur** (par exemple sa passerelle Docker), et non uniquement `127.0.0.1`. Une cible distante est refusée. Le test `POST /v1/decisions` utilise toujours le jeton authentifié; la fenêtre AD est ouverte uniquement après sonde `/health` réussie.

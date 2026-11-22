@@ -17,6 +17,7 @@ import re
 import sys
 import socket
 import urllib.parse
+import ipaddress
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT/'soar'))
@@ -314,6 +315,73 @@ def probe(*, agent='006', domain='ad.ikom.mg', wait=14, token_fn=None, request_f
         time.sleep(.75)
 
 
+
+def _local_ipv4_interface_addresses(*, runner=None):
+    """Find IPv4 interface addresses on this host; never trust DNS as proof of locality."""
+    run=runner or subprocess.run
+    try:
+        proc=run(['ip','-j','address','show'],capture_output=True,text=True,timeout=6)
+    except (OSError, subprocess.TimeoutExpired):
+        raise RuntimeError('Impossible de lire les interfaces locales avec ip -j address show') from None
+    if proc.returncode:
+        raise RuntimeError('Interfaces locales illisibles : ip -j address show a échoué')
+    try:
+        items=json.loads(proc.stdout)
+        return {entry['local'] for interface in items
+                for entry in interface.get('addr_info',[])
+                if entry.get('family')=='inet' and isinstance(entry.get('local'),str)}
+    except (ValueError, TypeError, KeyError):
+        raise RuntimeError('Impossible de vérifier les adresses IPv4 locales') from None
+
+
+def local_bridge_endpoint(cfg, *, addresses_fn=None):
+    """Select an authenticated HTTP endpoint on the SAME server as the SOAR CLI.
+
+    The bridge may bind to a Docker gateway (e.g. 192.168.96.1) so the
+    Shuffle container can call back. Connecting to that LOCAL address is fine;
+    connecting to an arbitrary address from configuration is not.
+    """
+    raw_host=cfg.get('SOAR_BIND_HOST','127.0.0.1').strip()
+    raw_port=str(cfg.get('SOAR_PORT','19081'))
+    try:
+        port=int(raw_port)
+    except (ValueError,TypeError):
+        raise ValueError('SOAR_PORT doit être un entier') from None
+    if not 1<=port<=65535 or str(port)!=raw_port:
+        raise ValueError('SOAR_PORT non valide')
+    if raw_host in ('localhost','::1','[::1]'):
+        host='127.0.0.1' if raw_host=='localhost' else '[::1]'
+    else:
+        try:
+            addr=ipaddress.ip_address(raw_host)
+        except ValueError:
+            raise PermissionError('Bridge: nom DNS ou adresse ambiguë refusé pour le test AD') from None
+        if addr.version != 4:
+            raise PermissionError('Bridge: seule une IPv4 locale ou ::1 est autorisée')
+        if addr.is_unspecified:
+            host='127.0.0.1'  # wildcard bind accepts loopback, never dial 0.0.0.0
+        elif addr.is_loopback:
+            host=raw_host
+        else:
+            local=(addresses_fn or _local_ipv4_interface_addresses)()
+            if raw_host not in local:
+                raise PermissionError('Bridge non-local : adresse non attribuée à une interface GCP, appel refusé')
+            host=raw_host
+    return 'http://'+host+':'+str(port)
+
+
+def ensure_local_bridge_health(endpoint, *, opener=None):
+    """Preflight before opening any AD lab window or submitting decisions."""
+    open_client=opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req=urllib.request.Request(endpoint+'/health',headers={'Accept':'application/json'})
+    with open_client.open(req,timeout=5) as response:
+        data=json.load(response)
+        if (response.status!=200 or data.get('service')!='aegismesh-soar-bridge'
+                or data.get('status')!='up'):
+            raise RuntimeError('Bridge local : /health ne confirme pas le service SOAR')
+    return True
+
+
 def lab_disable(*, sid, confirm, config_path=CONFIG, proof_path=PROBE_STATE):
     """Real full Shuffle/Wazuh/AD demonstration, explicitly NOT an AI finding."""
     if not confirm: raise PermissionError('--confirm requis')
@@ -328,6 +396,13 @@ def lab_disable(*, sid, confirm, config_path=CONFIG, proof_path=PROBE_STATE):
     bridge.ENV.clear();bridge.ENV.update(cfg)
     if not current_probe(agent,domain,state_path=proof_path):
         raise PermissionError('Readiness DC non confirmée depuis moins de 40 minutes')
+    # Validate the exact local interface and HTTP health BEFORE opening
+    # the temporary lab window. A Docker gateway is local even when it is
+    # not in 127.0.0.0/8. External addresses remain forbidden.
+    endpoint=local_bridge_endpoint(cfg)
+    if not cfg.get('DECISION_TOKEN'):
+        raise PermissionError('Jeton de décision SOAR absent')
+    ensure_local_bridge_health(endpoint)
     until=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=10)).isoformat()
     apply_and_restart({'AD_LAB_UNTIL':until},cfg)
     decision_id='am-'+secrets.token_hex(12)
@@ -337,10 +412,7 @@ def lab_disable(*, sid, confirm, config_path=CONFIG, proof_path=PROBE_STATE):
            'confidence':0,'evidence_ids':[],'approved':True,
            'target':{'agent_id':agent,'user_sid':sid,'domain_dns':domain},
            'expires_at':(dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=3)).isoformat()}
-    host=cfg.get('SOAR_BIND_HOST','127.0.0.1');port=cfg.get('SOAR_PORT','19081')
-    if host not in ('127.0.0.1','localhost','::1'):
-        raise PermissionError('Bridge non-local : appel test refusé')
-    req=urllib.request.Request('http://127.0.0.1:'+str(port)+'/v1/decisions',
+    req=urllib.request.Request(endpoint+'/v1/decisions',
         data=json.dumps(event).encode('utf-8'),method='POST',
         headers={'X-Aegismesh-Token':cfg['DECISION_TOKEN'],'Content-Type':'application/json'})
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req,timeout=8) as response:
