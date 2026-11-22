@@ -41,6 +41,7 @@ COLLECT_LINUX_TRIAGE = "SELECT collect_client(client_id=ClientId, artifacts=['Li
 READ_MONITORING = 'SELECT get_client_monitoring() AS monitoring FROM scope() LIMIT 1'
 # Fixed admin VQL, not caller supplied. Scope: quarantine label group only.
 ADD_QUARANTINE_MONITOR = "SELECT add_client_monitoring(artifact='Windows.Remediation.QuarantineMonitor', label='Quarantine') AS result FROM scope()"
+RM_QUARANTINE_MONITOR = "SELECT rm_client_monitoring(artifact='Windows.Remediation.QuarantineMonitor', label='Quarantine') AS result FROM scope()"
 # Only 001 is authorized to start a lab quarantine. This UDP permit is the
 # underlay WireGuard peer, NOT any other traffic in the 10.77.77.0/24 VPN.
 WG_LAB_TRANSPORT_IP = '136.116.89.163'
@@ -48,6 +49,7 @@ WG_LAB_TRANSPORT_PORT = 51820
 WG_LAB_RULE_TABLE = '\n'.join([
     'Action,SrcAddr,SrcMask,SrcPort,DstAddr,DstMask,DstPort,Protocol,Mirrored,Description',
     'Permit,me,,0,136.116.89.163,,51820,udp,yes,AEGISMESHWireGuardUnderlay',
+    'Permit,me,,0,10.77.77.1,,8000,tcp,yes,VelociraptorFrontEnd',
     'Permit,me,,0,any,,53,udp,yes,DNS',
     'Permit,me,,0,any,,53,tcp,yes,DNS TCP',
     'Permit,me,,68,any,,67,udp,yes,DHCP',
@@ -216,7 +218,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1', *WG_MONITOR_PATCH_QUERIES.values(), *WG_MONITOR_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PATCH_QUERIES.values()):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,RM_QUARANTINE_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1', *WG_MONITOR_PATCH_QUERIES.values(), *WG_MONITOR_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PREVIEW_QUERIES.values(), *WG_MONITOR_JSON_PATCH_QUERIES.values()):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')

@@ -435,6 +435,164 @@ def transport_ensure(agent, *, confirm=False):
             'scope':'Quarantine monitoring label; seule la cible LAB 001 est autorisée à déclencher cette quarantaine'}
 
 
+
+def _read_monitor_table_v4215():
+    """Read the entire monitoring state; do not print its potentially sensitive content."""
+    rows = edr.api_query(edr.READ_MONITORING)
+    if len(rows) != 1 or not isinstance(rows[0], dict):
+        raise RuntimeError('Lecture monitoring Velociraptor absente ou ambiguë')
+    table = rows[0].get('monitoring')
+    if isinstance(table, str):
+        table = json.loads(table)
+    if not isinstance(table, dict):
+        raise RuntimeError('Structure du monitoring invalide ou inaccessible')
+    # Velociraptor protobuf JSON can omit empty repeated fields entirely.
+    # A successful removal of the last label-group may legitimately omit
+    # `label_events`; normalize it, rather than blocking rollback.
+    if table.get('label_events') is None:
+        table['label_events'] = []
+    if not isinstance(table['label_events'], list):
+        raise RuntimeError('Format label_events du monitoring invalide')
+    return table
+
+
+def _quarantine_group_v4215(table):
+    groups = [x for x in table.get('label_events', [])
+              if isinstance(x, dict) and str(x.get('label', '')).casefold() == 'quarantine']
+    if len(groups) > 1:
+        raise PermissionError('Groupes Quarantine dupliqués; opération refusée')
+    return groups[0] if groups else None
+
+
+def _monitor_exists_v4215(table):
+    group = _quarantine_group_v4215(table)
+    if not group:
+        return False
+    config = group.get('artifacts') or {}
+    if not isinstance(config, dict):
+        raise RuntimeError('Quarantine: structure artifacts inconnue')
+    names = config.get('artifacts') or []
+    if not isinstance(names, list):
+        raise RuntimeError('Quarantine: noms des artefacts invalides')
+    if names.count('Windows.Remediation.QuarantineMonitor') > 1:
+        raise PermissionError('Moniteur Quarantine dupliqué')
+    return 'Windows.Remediation.QuarantineMonitor' in names
+
+
+def _other_monitoring_unchanged_v4215(before, after):
+    """Never silently alter other label groups or the global monitoring state."""
+    bg = {k: v for k, v in before.items() if k != 'label_events'}
+    ag = {k: v for k, v in after.items() if k != 'label_events'}
+    if bg != ag:
+        return False
+    def others(table):
+        return [x for x in table.get('label_events', [])
+                if not (isinstance(x,dict) and str(x.get('label','')).casefold() == 'quarantine')]
+    return others(before) == others(after)
+
+
+def transport_repair(agent, *, confirm=False):
+    """Safely replace a default Quarantine-only entry with a parameterized one.
+
+    V4.2.14: `set_client_monitoring(value=patch(...))` returns NULL on this
+    server although the patch previews correctly. Use the documented scoped
+    rm/add API pair, verifying each real readback and restoring the original
+    default monitor if anything fails. No label, isolation, or firewall action.
+    """
+    edr.require_root()
+    if not confirm:
+        raise PermissionError('Confirmation --confirm requise pour réparer le moniteur')
+    cid = _validate_target(agent)
+    with edr.lease_lock():
+        if edr.read_json(edr.LEASES, {}):
+            raise PermissionError('Bail EDR actif : réparation refusée')
+        if any('Quarantine' in (client.get('labels') or []) for client in edr.api_clients()):
+            raise PermissionError('Un client possède déjà le label Quarantine : réparation refusée')
+        if 'Quarantine' in edr.labels_for(cid):
+            raise PermissionError('Windows LAB déjà en quarantaine : réparation refusée')
+        assignments = _read_monitoring_assignments()
+        if assignments['global'] or any(x.casefold() != 'quarantine' for x in assignments['labels']):
+            raise PermissionError('Moniteur utilisé dans un autre groupe : réparation refusée')
+        before = _read_monitor_table_v4215()
+        group = _quarantine_group_v4215(before)
+        if group is None:
+            raise RuntimeError('Groupe Quarantine absent; lancer monitor-ensure')
+        if set(group) != {'label','artifacts'} or str(group.get('label')) != 'Quarantine':
+            raise PermissionError('Groupe Quarantine non standard : remplacement refusé')
+        args = group.get('artifacts')
+        if not isinstance(args, dict) or set(args) - {'artifacts','specs'}:
+            raise PermissionError('Artefacts Quarantine non standard : remplacement refusé')
+        if args.get('artifacts') != ['Windows.Remediation.QuarantineMonitor']:
+            raise PermissionError('Autres artefacts Quarantine présents : remplacement refusé')
+        if args.get('specs') not in (None, []):
+            if _rule_table(_quarantine_spec(before)) == edr.WG_LAB_RULE_TABLE.strip():
+                return {'status':'already_configured', **transport_status(agent)}
+            raise PermissionError('Paramètres personnalisés existants : remplacement refusé')
+        # Back up only after all guards pass. This file is private (0600) and
+        # stays on the host; the public Git checkout contains no credentials.
+        backup = edr.LEASES.parent / 'edr-quarantine-monitor-backup-v4215.json'
+        edr.atomic_json(backup, before)
+        removal_attempted = False
+        try:
+            removal_attempted = True
+            edr.api_query(edr.RM_QUARANTINE_MONITOR)
+            without = _read_monitor_table_v4215()
+            if _monitor_exists_v4215(without):
+                raise RuntimeError('Retrait ciblé non confirmé par Velociraptor')
+            if not _other_monitoring_unchanged_v4215(before, without):
+                raise RuntimeError('Modification inattendue d un autre groupe lors du retrait')
+            edr.api_query(edr.ADD_QUARANTINE_WG_MONITOR)
+            after = _read_monitor_table_v4215()
+            if not _other_monitoring_unchanged_v4215(before, after):
+                raise RuntimeError('Modification inattendue d un autre groupe lors de l ajout')
+            if _rule_table(_quarantine_spec(after)) != edr.WG_LAB_RULE_TABLE.strip():
+                raise RuntimeError('Exception WireGuard non persistée après ajout avec paramètres')
+            return {'status':'configured_no_quarantine_started',
+                    'repair_method':'scoped_remove_add_verified', 'agent_id':agent,
+                    'client_id':cid, 'wireguard_peer':f'{edr.WG_LAB_TRANSPORT_IP}:{edr.WG_LAB_TRANSPORT_PORT}/udp',
+                    'wg_exception_configured':True, 'endpoint_network_isolation_verified':False,
+                    'next':'Confirmer le maintien TLS Velociraptor puis tester une seule isolation lab'}
+        except Exception as primary:
+            # A query may raise *after* the remote function ran: inspect the
+            # current state instead of trusting the local return code.
+            recovery_error = None
+            try:
+                current = _read_monitor_table_v4215()
+                if removal_attempted and _other_monitoring_unchanged_v4215(before, current):
+                    if _monitor_exists_v4215(current):
+                        present_spec = _quarantine_spec(current)
+                        present_rule = _rule_table(present_spec)
+                        if present_rule == edr.WG_LAB_RULE_TABLE.strip():
+                            # Writing happened despite API response error.
+                            return {'status':'configured_no_quarantine_started',
+                                    'repair_method':'scoped_remove_add_verified_after_api_error',
+                                    'agent_id':agent, 'client_id':cid,
+                                    'wg_exception_configured':True,
+                                    'endpoint_network_isolation_verified':False}
+                        if present_rule is not None:
+                            # Partial custom modification: remove this group only.
+                            edr.api_query(edr.RM_QUARANTINE_MONITOR)
+                            edr.api_query(edr.ADD_QUARANTINE_MONITOR)
+                        # Otherwise original default monitor remains: no extra mutation.
+                    else:
+                        edr.api_query(edr.ADD_QUARANTINE_MONITOR)
+                    restored = _read_monitor_table_v4215()
+                    if (not _other_monitoring_unchanged_v4215(before, restored)
+                        or not _monitor_exists_v4215(restored)
+                        or _rule_table(_quarantine_spec(restored)) is not None):
+                        raise RuntimeError('Restauration du moniteur par défaut NON confirmée')
+                else:
+                    raise RuntimeError('Changement concurrent/état ambigu : restauration automatique refusée')
+            except Exception as ex:
+                recovery_error = type(ex).__name__ + ': ' + str(ex)[:120]
+            if recovery_error:
+                raise RuntimeError('Réparation EDR interrompue ET restauration non vérifiée; '
+                                   'sauvegarde privée sur GCP conservée; cause=' +
+                                   type(primary).__name__ + '; reprise=' + recovery_error) from None
+            raise RuntimeError('Réparation EDR non persistée, moniteur d origine restauré et vérifié; '
+                               'cause=' + type(primary).__name__ + ': ' + str(primary)[:110]) from None
+
+
 def _validate_target(agent, *, require_monitor=True):
     if agent != LAB_AGENT:
         raise PermissionError('Mode laboratoire limité à WIN-LAB-01 (agent 001), jamais au contrôleur AD 006')
@@ -610,6 +768,8 @@ def main(argv=None):
     monitor_parser.add_argument('--confirm',action='store_true')
     transport_parser=s.add_parser('transport-ensure');transport_parser.add_argument('--agent-id',required=True)
     transport_parser.add_argument('--confirm',action='store_true')
+    repair_parser=s.add_parser('transport-repair');repair_parser.add_argument('--agent-id',required=True)
+    repair_parser.add_argument('--confirm',action='store_true')
     release_parser=s.add_parser('release');release_parser.add_argument('--agent-id',required=True)
     release_parser.add_argument('--confirm',action='store_true')
     a=p.parse_args(argv)
@@ -622,6 +782,7 @@ def main(argv=None):
         elif a.action=='transport-inspect': result=transport_inspect(a.agent_id)
         elif a.action=='transport-diagnose': result=transport_diagnose(a.agent_id)
         elif a.action=='transport-ensure': result=transport_ensure(a.agent_id,confirm=a.confirm)
+        elif a.action=='transport-repair': result=transport_repair(a.agent_id,confirm=a.confirm)
         elif a.action=='release': result=stop(a.agent_id,confirm=a.confirm)
         elif a.action=='results': result=monitor_results(a.agent_id)
         else: result=monitoring_logs(a.agent_id)

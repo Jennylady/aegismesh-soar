@@ -1,3 +1,10 @@
+## 4.2.15 — Remplacement ciblé du moniteur EDR avec retour arrière vérifié
+- Diagnostic réel V4.2.14 : prévisualisation patch RFC6902 valide, mais `set_client_monitoring()` renvoie NULL et aucune valeur n'est persistée. Ne pas affirmer que le backend refuse les droits sans preuve.
+- Nouvelle commande `edr lab-quarantine transport-repair --agent-id 001 --confirm` : lorsque le moniteur Quarantine ne possède aucun paramètre personnalisé et que personne n'est isolé, utilise les fonctions Velociraptor documentées `rm_client_monitoring` + `add_client_monitoring(parameters=...)` uniquement pour ce groupe. Les changements sont vérifiés par relecture après chaque opération.
+- Avant toute suppression, sauvegarde privée 0600 du monitoring complet côté GCP. Restaure automatiquement le moniteur original si l'ajout paramétré échoue, vérifie la restauration, et refuse d'isoler tant que l'exception UDP WireGuard n'est pas confirmée.
+- Correction supplémentaire : RuleLookupTable conserve explicitement le port du frontend Velociraptor `10.77.77.1:8000/tcp` **et** l UDP du transport WireGuard; la V4.2.10 omettait le frontend, provoquant une potentielle auto-annulation de la quarantaine.
+- Le DC `006` est exclu, les autres labels et le monitoring global sont protégés; aucune quarantaine, politique Windows, certificat ou score IA n'est créé par le correctif. Les tests locaux sont simulés; le résultat réel reste à confirmer.
+
 ## 4.2.14 — Patch JSON typé pour la table de monitoring Velociraptor
 - Le diagnostic réel V4.2.13 renvoie `patch_preview_valid: false` avec `Liste des spécifications du monitoring invalide` : la transformation VQL par `dict`/liste littérale ne produit pas systématiquement une liste de spécifications exploitable.
 - Ajoute une seconde variante RFC 6902, construite avec `parse_json_array(data=...)` et une valeur de spécification encodée JSON. La variante est tentée exclusivement en lecture seule si la prévisualisation VQL d'origine n'est pas valide. Ne tente jamais une écriture sans validation complète de RuleLookupTable et sans vérification des autres groupes.
