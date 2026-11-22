@@ -1,3 +1,9 @@
+## 4.2.7 — Test scripté de la quarantaine réelle Windows LAB (sans interface Velociraptor)
+- Ajoute `edr lab-quarantine start/status/logs/release`, limité à l'agent 001 et au client EDR explicitement vérifié. CLI root seule, confirmation explicite et accès console de secours obligatoires.
+- Utilise l'API mTLS Velociraptor existante pour poser le vrai label `Quarantine` et le moniteur `Windows.Remediation.QuarantineMonitor`, avec bail de laboratoire de 180 secondes enregistré avant l'opération, et timer automatique de retrait déjà installé.
+- Ne modifie pas `ENABLE_EDR_ISOLATION`, ne simule pas de décision/score IA, ne touche jamais au contrôleur de domaine. Le statut distingue le label et la **preuve réelle** de la coupure réseau Windows.
+- Ajoute un accès borné aux logs client du moniteur et des tests isolés (aucune vraie quarantaine créée durant l'update).
+
 ## 4.2.6 — Accès Netlink du bridge et diagnostic nftables
 - Corrige l'échec `Table nftables SOAR inaccessible` sur GCP malgré une table nftables présente et lisible depuis un terminal root : l'unité systemd du bridge excluait `AF_NETLINK` de `RestrictAddressFamilies`.
 - Ajoute uniquement `AF_NETLINK` aux trois familles déjà autorisées (`AF_INET`, `AF_INET6`, `AF_UNIX`) ; conserve `NoNewPrivileges`, `ProtectSystem`, `PrivateTmp`, et les protections des IP.

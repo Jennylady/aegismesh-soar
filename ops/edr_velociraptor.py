@@ -39,6 +39,7 @@ COLLECT = "SELECT collect_client(client_id=ClientId, artifacts='Generic.Client.I
 COLLECT_WIN_TRIAGE = "SELECT collect_client(client_id=ClientId, artifacts=['Windows.System.Pslist', 'Windows.Network.Netstat'], env=dict()) AS collection FROM scope()"
 COLLECT_LINUX_TRIAGE = "SELECT collect_client(client_id=ClientId, artifacts=['Linux.Sys.Pslist', 'Linux.Network.Netstat'], env=dict()) AS collection FROM scope()"
 READ_MONITORING = 'SELECT get_client_monitoring() AS monitoring FROM scope() LIMIT 1'
+READ_QUARANTINE_LOGS = "SELECT * FROM monitoring_logs(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 600) LIMIT 20"
 READ_FLOWS = 'SELECT * FROM flows(client_id=ClientId) LIMIT 50'
 READ_FLOW = 'SELECT * FROM flows(client_id=ClientId, flow_id=FlowId) LIMIT 2'
 READ_FLOW_DETAILS = 'SELECT get_flow(client_id=ClientId, flow_id=FlowId) AS details FROM scope() LIMIT 1'
@@ -123,7 +124,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,READ_QUARANTINE_LOGS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')
@@ -692,6 +693,8 @@ def main(argv=None):
     att=s.add_parser('attest',help='Attester le mapping Wazuh/EDR réel d un client au nom différent')
     att.add_argument('--agent-id',required=True);att.add_argument('--confirm',action='store_true')
     s.add_parser('release-expired')
+    lab=s.add_parser('lab-quarantine',help='LAB 001: label EDR réel, délai automatique 180s, pas de score IA inventé')
+    lab.add_argument('lab_arguments',nargs=argparse.REMAINDER)
     a=p.parse_args(argv)
     try:
         require_root()
@@ -797,6 +800,11 @@ def main(argv=None):
             print(json.dumps(request_triage(a.agent_id,confirm=a.confirm),ensure_ascii=False,indent=2))
         elif a.action=='quarantine-doctor':
             print(json.dumps(quarantine_monitoring_status(a.agent_id),ensure_ascii=False,indent=2))
+        elif a.action=='lab-quarantine':
+            # Dedicated root CLI only: never expose this via the SOAR HTTP bridge.
+            sys.path.insert(0,str(ROOT))
+            from ops.edr_lab_v427 import main as lab_main
+            return lab_main(a.lab_arguments)
         elif a.action=='release-expired':return release_expired()
     except (RuntimeError,ValueError,PermissionError,FileNotFoundError) as exc:
         print('ÉCHEC EDR:',str(exc)[:250],file=sys.stderr);return 2
