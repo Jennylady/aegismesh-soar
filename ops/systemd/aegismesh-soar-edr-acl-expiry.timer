@@ -1,0 +1,11 @@
+[Unit]
+Description=AEGISMESH SOAR - minuterie de révocation ACL EDR LAB
+X-Aegismesh-Soar-Managed=yes
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=10s
+Persistent=true
+Unit=aegismesh-soar-edr-acl-expiry.service
+[Install]
+WantedBy=timers.target

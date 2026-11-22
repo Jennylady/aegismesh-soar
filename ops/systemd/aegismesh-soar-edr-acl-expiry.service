@@ -1,0 +1,8 @@
+[Unit]
+Description=AEGISMESH SOAR - restoration automatique des ACL Velociraptor LAB
+X-Aegismesh-Soar-Managed=yes
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /opt/aegismesh/soar/ops/edr_acl_v4219.py expire
+NoNewPrivileges=true

@@ -6,6 +6,7 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from ops import edr_direct_v4217 as direct
 from ops import edr_velociraptor as edr
+from ops import edr_acl_v4219 as acl
 
 assert 'Windows.Remediation.Quarantine' in edr.DIRECT_QUARANTINE_COLLECT
 assert 'RuleLookupTable' in edr.DIRECT_QUARANTINE_COLLECT
@@ -43,6 +44,7 @@ with tempfile.TemporaryDirectory() as tmp:
     with (patch.object(direct,'PATH',path),patch.object(edr,'require_root'),
           patch.object(direct,'_identity',return_value=direct.CID),
           patch.object(edr,'timer_active',return_value=True),
+          patch.object(acl,'require_active_lab_acl',return_value=True),
           patch.object(edr,'lease_lock',return_value=Lock()),
           patch.object(edr,'read_json',side_effect=read),
           patch.object(edr,'atomic_json',side_effect=save),
@@ -80,6 +82,7 @@ with tempfile.TemporaryDirectory() as tmp:
     with (patch.object(direct,'PATH',path),patch.object(edr,'require_root'),
           patch.object(direct,'_identity',return_value=direct.CID),
           patch.object(edr,'timer_active',return_value=True),
+          patch.object(acl,'require_active_lab_acl',return_value=True),
           patch.object(edr,'lease_lock',return_value=Lock()),
           patch.object(edr,'read_json',side_effect=read),
           patch.object(edr,'atomic_json',side_effect=save),

@@ -137,6 +137,8 @@ def start(agent, *, confirm=False, console_access=False, recovery_task_armed=Fal
     if not (confirm and console_access and recovery_task_armed):
         raise PermissionError('--confirm --console-access --recovery-task-armed obligatoires; installer d abord le secours local')
     cid=_identity(agent)
+    from ops import edr_acl_v4219 as acl
+    acl.require_active_lab_acl()
     if not edr.timer_active():
         raise PermissionError('Timer SOAR de retrait inactif : exécution refusée')
     with edr.lease_lock():

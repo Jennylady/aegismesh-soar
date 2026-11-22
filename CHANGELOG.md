@@ -1,3 +1,10 @@
+## 4.2.19 — ACL EDR temporaire et contrôle des autorisations
+- Vérifie EXECVE et NETWORK pour la collecte Windows.Remediation.Quarantine.
+- Élévation limitée au compte API existant; aucun rôle administrator ajouté.
+- Restauration automatique en 12 minutes via un timer indépendant.
+- Refuse direct-start si les permissions temporaires ne sont pas vérifiées.
+- L'activation nécessite --confirm --allow-restart, redémarre Velociraptor uniquement.
+
 ## 4.2.18 — Identifiants de collecte EDR et diagnostic des déploiements incertains
 - Prend en charge `flow_id` / `FlowId` et `session_id` / `SessionId` dans la réponse `collect_client()`, sans attribuer un identifiant incohérent ni appartenant à un autre client.
 - `direct-status` et `direct-doctor` interrogent en lecture seule les collectes récentes Windows.Remediation.Quarantine ; les résultats sont de simples candidats et ne prouvent aucune isolation.
