@@ -1,3 +1,9 @@
+## 4.2.16 — Compatibilité sûre des métadonnées protobuf du moniteur Quarantine
+- Corrige le rejet systématique `Artefacts Quarantine non standard` : les champs protobuf additionnels sont analysés sans divulguer leurs valeurs. Seuls ceux à valeur vide/par défaut (null, false, 0, chaîne/liste/dictionnaire vide) sont tolérés pour la réparation ciblée. Toute valeur personnalisée non vide interdit strictement la suppression et apparaît par **nom uniquement** dans un diagnostic exploitable.
+- `transport-inspect` expose uniquement noms, types et statut par défaut des champs supplémentaires; jamais le contenu du monitoring ni les secrets.
+- Conserve les barrières : identité LAB 001, DC 006 interdit, aucun bail/label actif, unique moniteur, aucun autre artefact dans Quarantine, sauvegarde privée, suppression/ajout scoped et restauration vérifiée, aucune isolation durant la configuration.
+- Tests de non-régression avec paramètres protobuf par défaut et non vides; aucune action réelle sur GCP/Windows. L'effet réseau reste à prouver après configuration confirmée.
+
 ## 4.2.15 — Remplacement ciblé du moniteur EDR avec retour arrière vérifié
 - Diagnostic réel V4.2.14 : prévisualisation patch RFC6902 valide, mais `set_client_monitoring()` renvoie NULL et aucune valeur n'est persistée. Ne pas affirmer que le backend refuse les droits sans preuve.
 - Nouvelle commande `edr lab-quarantine transport-repair --agent-id 001 --confirm` : lorsque le moniteur Quarantine ne possède aucun paramètre personnalisé et que personne n'est isolé, utilise les fonctions Velociraptor documentées `rm_client_monitoring` + `add_client_monitoring(parameters=...)` uniquement pour ce groupe. Les changements sont vérifiés par relecture après chaque opération.

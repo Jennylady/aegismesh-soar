@@ -202,6 +202,41 @@ def _monitoring_patch_target():
     return idx, bool(specs), table
 
 
+def _quarantine_proto_extras_v4216(args):
+    """Classify unknown protobuf fields without exposing their values.
+
+    Proto JSON may explicitly serialize default-valued resource/collector
+    fields. These must not be confused with real custom configuration. Only
+    empty/default scalar or container values qualify for a scoped rm/add;
+    all nondefault extras refuse replacement to protect other settings.
+    """
+    if not isinstance(args, dict):
+        raise RuntimeError('Quarantine: structure artifacts invalide')
+    known = {'artifacts', 'specs'}
+    extras = {key: val for key, val in args.items() if key not in known}
+    if any(not isinstance(key, str) for key in extras):
+        raise PermissionError('Noms de champs du monitoring inattendus')
+    if len(extras) > 32:
+        raise PermissionError('Trop de champs supplémentaires du monitoring')
+    def is_default(value):
+        # Strictly refuse nonempty collections and all truthy scalar values;
+        # never discard a customized batch/timeout/resource setting.
+        if value is None or value is False:
+            return True
+        if type(value) in (int, float):
+            return value == 0
+        if isinstance(value, str):
+            return value == ''
+        if isinstance(value, (dict, list)):
+            return len(value) == 0
+        return False
+    nondefault = sorted(key for key, val in extras.items() if not is_default(val))
+    return {'extra_keys': sorted(extras),
+            'nondefault_extra_keys': nondefault,
+            'extra_types': {key: type(extras[key]).__name__ for key in sorted(extras)},
+            'safe_default_only': not nondefault}
+
+
 def transport_inspect(agent):
     """Read-only shape diagnostic; no raw VQL configuration or secrets exposed."""
     edr.require_root()
@@ -234,6 +269,8 @@ def transport_inspect(agent):
             'specs_type': type(specs).__name__,
             'specs_count': len(specs) if isinstance(specs, list) else None,
             'spec_matches_count': sum(1 for sp in specs if isinstance(sp, dict) and sp.get('artifact') == 'Windows.Remediation.QuarantineMonitor') if isinstance(specs, list) else None,
+            'proto_metadata': _quarantine_proto_extras_v4216(data) if isinstance(data, dict) else None,
+            'repair_safe_default_metadata': (_quarantine_proto_extras_v4216(data)['safe_default_only'] if isinstance(data, dict) else False),
         })
     return {'agent_id': agent, 'client_id': cid,
             'quarantine_group_count': len(matches), 'groups': info,
@@ -520,8 +557,12 @@ def transport_repair(agent, *, confirm=False):
         if set(group) != {'label','artifacts'} or str(group.get('label')) != 'Quarantine':
             raise PermissionError('Groupe Quarantine non standard : remplacement refusé')
         args = group.get('artifacts')
-        if not isinstance(args, dict) or set(args) - {'artifacts','specs'}:
-            raise PermissionError('Artefacts Quarantine non standard : remplacement refusé')
+        if not isinstance(args, dict):
+            raise PermissionError('Artefacts Quarantine non structurés : remplacement refusé')
+        extra = _quarantine_proto_extras_v4216(args)
+        if not extra['safe_default_only']:
+            raise PermissionError('Artefacts Quarantine : paramètres supplémentaires non vides; '
+                                  'remplacement refusé. Champs: ' + ','.join(extra['nondefault_extra_keys']))
         if args.get('artifacts') != ['Windows.Remediation.QuarantineMonitor']:
             raise PermissionError('Autres artefacts Quarantine présents : remplacement refusé')
         if args.get('specs') not in (None, []):
