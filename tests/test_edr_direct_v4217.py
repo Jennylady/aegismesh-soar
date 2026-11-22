@@ -67,9 +67,9 @@ with tempfile.TemporaryDirectory() as tmp:
         r=direct.release('001',confirm=True)
         assert r['status']=='release_dispatched_unverified'
         assert r['network_restoration_verified'] is False
-        assert len(api.calls)==2
+        assert sum(1 for q,_ in api.calls if q==edr.DIRECT_QUARANTINE_REMOVE)==1
         assert 'RemovePolicy=TRUE' in api.calls[-1][0]
-        assert direct.clear('001',confirm=True)['lease_cleared'] is True
+        assert direct.clear('001',confirm=True,endpoint_restored=True)['lease_cleared'] is True
         assert not read(path,{})
 
 # Unverified start retains lease to allow expiry even when API result is unclear

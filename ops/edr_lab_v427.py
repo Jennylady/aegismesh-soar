@@ -821,6 +821,7 @@ def main(argv=None):
     direct_release.add_argument('--confirm',action='store_true')
     direct_clear=s.add_parser('direct-clear');direct_clear.add_argument('--agent-id',required=True)
     direct_clear.add_argument('--confirm',action='store_true')
+    direct_clear.add_argument('--endpoint-restored',action='store_true')
     release_parser=s.add_parser('release');release_parser.add_argument('--agent-id',required=True)
     release_parser.add_argument('--confirm',action='store_true')
     a=p.parse_args(argv)
@@ -835,7 +836,7 @@ def main(argv=None):
             elif a.action=='direct-start':result=direct.start(a.agent_id, confirm=a.confirm,
                 console_access=a.console_access,recovery_task_armed=a.recovery_task_armed)
             elif a.action=='direct-release':result=direct.release(a.agent_id,confirm=a.confirm)
-            elif a.action=='direct-clear':result=direct.clear(a.agent_id,confirm=a.confirm)
+            elif a.action=='direct-clear':result=direct.clear(a.agent_id,confirm=a.confirm,endpoint_restored=a.endpoint_restored)
             else:raise RuntimeError('Commande LAB inconnue')
         elif a.action=='monitor-ensure': result=ensure_monitor(a.agent_id,confirm=a.confirm)
         elif a.action=='transport-status': result=transport_status(a.agent_id)

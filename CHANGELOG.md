@@ -1,3 +1,10 @@
+## 4.2.18 — Identifiants de collecte EDR et diagnostic des déploiements incertains
+- Prend en charge `flow_id` / `FlowId` et `session_id` / `SessionId` dans la réponse `collect_client()`, sans attribuer un identifiant incohérent ni appartenant à un autre client.
+- `direct-status` et `direct-doctor` interrogent en lecture seule les collectes récentes Windows.Remediation.Quarantine ; les résultats sont de simples candidats et ne prouvent aucune isolation.
+- Lorsqu'une collecte ne retourne aucun identifiant, le bail contient uniquement les noms/types des champs API et garde le secours local ; pas de second déclenchement automatique.
+- `direct-clear` demande maintenant `--endpoint-restored` avec `--confirm` pour attester explicitement, après vérification sur Windows LAB, LDAP accessible, absence de politique IPsec et exécution du secours local. Il n'est pas possible de retrouver a posteriori les preuves perdues avec le bail V4.2.17 effacé.
+- Ne déclenche aucune quarantaine ni modification AD, GCP, WireGuard ou mTLS pendant la mise à jour. Tests simulés, résultats réels à valider.
+
 ## 4.2.17 — Quarantaine EDR directe, sans modification du monitoring partagé
 - Préserve intégralement les champs Velociraptor `compiled_collector_args` et `max_upload_bytes` en ne modifiant plus la table de monitoring `Quarantine` pour le test laboratoire. Le correctif précédent refusait leur suppression à raison.
 - Nouveau mode `edr lab-quarantine direct-start`, déclenché sur le client 001 par un flow Velociraptor `Windows.Remediation.Quarantine` avec des paramètres fixes : exception WireGuard UDP, accès EDR TCP, DNS/DHCP et blocage général. Aucun label `Quarantine` posé et aucune modification de `get_client_monitoring()`.
