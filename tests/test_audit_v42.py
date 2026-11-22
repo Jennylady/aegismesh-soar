@@ -13,13 +13,14 @@ node={'HostConfig':{'NetworkMode':'tenzir-network','PortBindings':{}},
 with mock.patch.object(audit,'docker_object',side_effect=lambda kind,name: node if kind=='container' else None):
     assert audit.tenzir_status()['state']=='broken_missing_network'
     with mock.patch.object(audit,'checked') as checked, \
-         mock.patch.object(audit,'tenzir_status',return_value={'state':'running','network_exists':True}):
+         mock.patch.object(audit,'command',return_value=mock.Mock(returncode=0,stdout='tenzir-node',stderr='')) as cmd, \
+         mock.patch.object(audit,'tenzir_status',return_value={'state':'running','network_exists':True,'network_binding_verified':True}):
         with mock.patch.object(audit,'docker_object',side_effect=[node,None,{'Driver':'bridge','Name':'tenzir-network'}]):
             with mock.patch.object(audit.os,'geteuid',return_value=0):
                 result=audit.repair_tenzir(confirm=True)
                 assert result['node_state']=='running' and result['network_created']
                 assert checked.call_args_list[0].args[0]==['docker','network','create','--driver','bridge','tenzir-network']
-                assert checked.call_args_list[1].args[0]==['docker','start','tenzir-node']
+                assert cmd.call_args.args[0]==['docker','start','tenzir-node']
 
 public=dict(node)
 public={'HostConfig':{'NetworkMode':'tenzir-network',
@@ -93,3 +94,41 @@ with tempfile.TemporaryDirectory() as tmp:
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT count(*) FROM sqlite_master WHERE name='response_checks'").fetchone()[0]==0
 print('PASS: block inventory read-only, absent endpoint proof remains not_verified')
+
+
+# V4.2.1: actual Docker output can have NetworkMode=bridge, but stale
+# NetworkSettings.Networks still names the missing tenzir-network.
+bridge_stale={'Name':'/tenzir-node',
+    'HostConfig':{'NetworkMode':'bridge','PortBindings':{}},
+    'NetworkSettings':{'Networks':{'tenzir-network':{'NetworkID':'old-deleted-id'}}},
+    'State':{'Status':'created'},'Config':{'Image':'tenzir/tenzir:stable'}}
+with mock.patch.object(audit,'docker_object',side_effect=lambda kind,name: bridge_stale if kind=='container' else None):
+    state=audit.tenzir_status()
+    assert state['state']=='broken_missing_network' and state['stale_tenzir_network_reference']
+    assert state['attached_networks']==['tenzir-network']
+with mock.patch.object(audit,'docker_object',side_effect=[bridge_stale,None,{'Driver':'bridge','Name':'tenzir-network'}]), \
+     mock.patch.object(audit,'checked') as checked, \
+     mock.patch.object(audit,'tenzir_status',return_value={'state':'running','network_exists':True,'network_binding_verified':True}), \
+     mock.patch.object(audit,'command',return_value=mock.Mock(returncode=0,stdout='tenzir-node',stderr='')) as cmd, \
+     mock.patch.object(audit.os,'geteuid',return_value=0):
+    result=audit.repair_tenzir(confirm=True)
+    assert result['node_state']=='running'
+    assert checked.call_args.args[0]==['docker','network','create','--driver','bridge','tenzir-network']
+    assert cmd.call_args.args[0]==['docker','start','tenzir-node']
+# A plain bridge with no tenzir-network attachment is still rejected.
+uncertain={**bridge_stale,'NetworkSettings':{'Networks':{'bridge':{}}}}
+with mock.patch.object(audit,'docker_object',return_value=uncertain), \
+     mock.patch.object(audit,'checked') as checked, \
+     mock.patch.object(audit.os,'geteuid',return_value=0):
+    try:audit.repair_tenzir(confirm=True);raise AssertionError('ambiguous bridge accepted')
+    except audit.AuditError:pass
+    checked.assert_not_called()
+# An orphaned network ID can still fail docker start. Never force-remove it.
+with mock.patch.object(audit,'docker_object',side_effect=[bridge_stale,None,{'Driver':'bridge','Name':'tenzir-network'}]), \
+     mock.patch.object(audit,'checked') as checked, \
+     mock.patch.object(audit,'command',return_value=mock.Mock(returncode=1,stdout='',stderr='network old-id not found')), \
+     mock.patch.object(audit.os,'geteuid',return_value=0):
+    try:audit.repair_tenzir(confirm=True);raise AssertionError('failed start accepted')
+    except audit.AuditError as e: assert 'sans suppression' in str(e)
+    assert checked.call_count==1  # only network creation; no destructive action
+print('PASS: V4.2.1 detects stale bridge network, refuses ambiguous states and stops on Docker start failure')

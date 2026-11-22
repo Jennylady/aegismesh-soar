@@ -1,3 +1,10 @@
+## 4.2.1 — Référence réseau Tenzir obsolète sous Docker bridge
+
+- `audit tenzir` inspecte aussi `NetworkSettings.Networks` et identifie les rattachements à `tenzir-network` même si `HostConfig.NetworkMode=bridge`.
+- `audit tenzir --repair --confirm` accepte seulement un rattachement explicite au réseau manquant et conserve les contrôles image, identité, exposition des ports et état.
+- Si Docker refuse le démarrage à cause d’un ancien identifiant réseau, la procédure s’arrête sans suppression du conteneur, sans reconnexion forcée et sans modification des volumes.
+- Réparation ciblée Tenzir uniquement : aucune modification automatique des politiques de blocage, du bridge, des workers ou de l’isolation EDR.
+
 ## 4.2.0 — Audit sur preuves et récupération contrôlée Tenzir
 
 - `aegismesh-soar audit status` : inventaire non destructif de Docker Shuffle, Tenzir, du bridge, des timers, des décisions réellement enregistrées et de l'état EDR.

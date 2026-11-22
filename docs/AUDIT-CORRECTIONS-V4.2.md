@@ -84,3 +84,29 @@ Le script ne crée aucune règle ni ne bascule l'isolement sans validation de la
 - Aucun changement de sécurité de production n'est exécuté automatiquement par `audit status` ou `update`.
 - La validation de l'isolation endpoint exige un capteur/artefact réel et un scénario contrôlé.
 - Ne pas ajouter l'agent 006 à la liste d'isolation et ne pas bloquer d'IP de gestion.
+
+
+## Mise à jour corrective 4.2.1 (réseau Tenzir obsolète)
+
+Le diagnostic réel a montré `HostConfig.NetworkMode=bridge` alors que Docker conserve
+`tenzir-network` dans ses réseaux associés. V4.2.1 détecte et autorise **seulement**
+cette configuration explicitement observable (sans supposer la topologie).
+
+Après `aegismesh-soar update` :
+
+```bash
+aegismesh-soar audit tenzir
+aegismesh-soar audit tenzir --repair --confirm
+aegismesh-soar audit tenzir
+docker ps -a --filter name=tenzir-node --format 'table {{.Names}}\t{{.Status}}\t{{.Networks}}'
+docker logs --since 2m --tail 30 shuffle-orborus
+```
+
+La réparation crée seulement le réseau Docker dédié si manquant, puis tente de
+démarrer le conteneur existant. Un démarrage `running` ne prouve pas la santé
+de l’API de Tenzir ou de ses pipelines. Si Docker indique qu'un ancien ID de
+réseau n'existe toujours pas, **ne pas** supprimer le conteneur ou ses volumes
+sur la base de ces seuls journaux. Examiner d'abord sa stack de création.
+
+Le worker Shuffle `OBSERVE` a déjà été validé indépendamment de Tenzir : ne pas
+relancer le test simplement pour faire disparaître l'erreur Tenzir.

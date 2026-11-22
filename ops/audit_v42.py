@@ -56,6 +56,12 @@ def docker_object(kind,name):
     except (ValueError,TypeError):return None
 
 
+def tenzir_networks(node):
+    """Inspect attachments, not just HostConfig.NetworkMode (often 'bridge')."""
+    networks=((node.get('NetworkSettings') or {}).get('Networks') or {})
+    return networks if isinstance(networks,dict) else {}
+
+
 def tenzir_status():
     node=docker_object('container',TENZIR_NODE)
     network=docker_object('network',TENZIR_NET)
@@ -65,17 +71,22 @@ def tenzir_status():
     mode=str((node.get('HostConfig') or {}).get('NetworkMode',''))
     status=str((node.get('State') or {}).get('Status','unknown'))
     image=str((node.get('Config') or {}).get('Image',''))
+    attached=tenzir_networks(node)
+    references_missing=mode==TENZIR_NET or TENZIR_NET in attached
     result={'state':status,'network_exists':network is not None,
-            'configured_network':mode,'image_tenzir':('tenzir' in image.lower())}
-    if mode==TENZIR_NET and network is None:
+            'configured_network':mode,'attached_networks':sorted(attached),
+            'stale_tenzir_network_reference':references_missing and network is None,
+            'image_tenzir':('tenzir' in image.lower()),
+            'network_binding_verified':network is not None and TENZIR_NET in attached}
+    if references_missing and network is None:
         result['state']='broken_missing_network'
-        result['reason']='tenzir-node référence tenzir-network, absent du moteur Docker'
+        result['reason']='tenzir-node conserve une référence à tenzir-network, absent de Docker'
     elif network is not None and status=='running':
-        result['reason']='conteneur démarré; santé de l API Tenzir non prouvée'
+        result['reason']='conteneur démarré; connectivité Tenzir et pipeline non prouvés'
     elif status!='running':
         result['reason']='conteneur pas en cours d exécution'
     else:
-        result['reason']='contexte réseau particulier; contrôle manuel de la configuration'
+        result['reason']='contexte réseau particulier; contrôle des rattachements requis'
     return result
 
 
@@ -84,11 +95,17 @@ def repair_tenzir(*, confirm=False):
     if os.name!='posix' or os.geteuid()!=0:raise AuditError('root Linux requis')
     node=docker_object('container',TENZIR_NODE)
     if not node:raise AuditError('tenzir-node introuvable, aucune création arbitraire')
-    mode=(node.get('HostConfig') or {}).get('NetworkMode')
+    mode=str((node.get('HostConfig') or {}).get('NetworkMode',''))
     image=str((node.get('Config') or {}).get('Image',''))
-    state=(node.get('State') or {}).get('Status')
-    if mode!=TENZIR_NET or 'tenzir' not in image.lower():
-        raise AuditError('Nom, image ou mode réseau inattendus: réparation refusée')
+    state=str((node.get('State') or {}).get('Status',''))
+    attached=tenzir_networks(node)
+    # Linux Docker can report NetworkMode=bridge even though the stale custom
+    # attachment is recorded under NetworkSettings.Networks. Only accept this
+    # case when it explicitly names tenzir-network, never assume from logs.
+    if ((mode!=TENZIR_NET and not (mode=='bridge' and TENZIR_NET in attached))
+            or 'tenzir' not in image.lower()
+            or (node.get('Name') and node.get('Name')!='/'+TENZIR_NODE)):
+        raise AuditError('Identité/image ou référence réseau Tenzir non confirmée: réparation refusée')
     if state not in ('created','exited','running'):
         raise AuditError('État Tenzir non pris en charge, refus de modifier Docker')
     # A previously published service must not become Internet-reachable as a
@@ -112,11 +129,20 @@ def repair_tenzir(*, confirm=False):
     if not net or net.get('Driver')!='bridge' or net.get('Name')!=TENZIR_NET:
         raise AuditError('Réseau Docker inattendu après création : ne pas redémarrer Tenzir')
     if state!='running':
-        checked(['docker','start',TENZIR_NODE],timeout=35)
+        # Don't force-disconnect or recreate an orphan container. Its stale
+        # NetworkID may still refer to a deleted object even after name reuse.
+        attempt=command(['docker','start',TENZIR_NODE],timeout=35)
+        if attempt.returncode:
+            raise AuditError('Réseau restauré mais démarrage Tenzir refusé par Docker; '
+                'référence réseau/ID peut être obsolète. Arrêt sans suppression '
+                'de conteneur ou volumes. Diagnostic: '+
+                (attempt.stderr or attempt.stdout).strip()[:140])
     after=tenzir_status()
     return {'operation':'tenzir_network_recovery','network_created':created,
             'node_state':after['state'],'network_exists':after['network_exists'],
-            'orborus_untouched':True,'note':'Contrôler les journaux et l API Tenzir avant de déclarer les pipelines opérationnels'}
+            'network_binding_verified':after['network_binding_verified'],
+            'orborus_untouched':True,
+            'note':'Démarrage Docker seul; contrôler API Tenzir et journaux Orborus avant validation'}
 
 
 def env_config(path=ENV):
@@ -346,7 +372,7 @@ def main(argv=None):
         print(json.dumps(output,indent=2,ensure_ascii=False,default=str))
         if a.action=='worker' and not output['observe_callback_verified']:
             return 3
-        if a.action=='tenzir' and a.repair and output['node_state']!='running':
+        if a.action=='tenzir' and a.repair and (output['node_state']!='running' or not output['network_binding_verified']):
             return 3
         if a.action=='timers' and a.ensure and not all(x['active'] for x in output['after'].values()):
             return 3
