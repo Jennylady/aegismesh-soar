@@ -14,7 +14,11 @@ base={'decision_id':ID,'tag':'WINDOWS_BLOCK_IP','incident_id':'INC-EDR-9',
 b.ENV={'ENABLE_PROD_ACTIONS':'true','PROTECTED_CIDRS':'153.67.85.205/32',
        'WAZUH_WINDOWS_AGENT_IDS':'001','WAZUH_WINDOWS_DC_AGENT_IDS':'006'}
 assert b.policy(base)=='windows_firewall_block'
-assert b.TAGS['EDR_ISOLATE']=='not_implemented'
+assert b.TAGS['EDR_ISOLATE']=='edr_quarantine'
+# The new action is STILL denied by default until independently enabled.
+try: b.policy({**base,'tag':'EDR_ISOLATE'})
+except PermissionError: pass
+else: raise AssertionError('EDR isolation enabled implicitly')
 with patch.object(b,'current_ssh_management_peers',return_value={ipaddress.ip_address('1.1.1.1')}),\
      patch.object(b,'wazuh_auth_token',return_value='mock-jwt'),\
      patch.object(b,'wazuh_agent_record',side_effect=lambda aid,token:{'id':aid,'status':'active', 'os':{'name':'Windows Server 2022' if aid=='006' else 'Microsoft Windows'}}),\

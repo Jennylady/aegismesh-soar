@@ -1,0 +1,11 @@
+[Unit]
+Description=AEGISMESH SOAR - contrôle périodique des quarantaines EDR
+X-Aegismesh-Soar-Managed=yes
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=aegismesh-soar-edr-expiry.service
+[Install]
+WantedBy=timers.target

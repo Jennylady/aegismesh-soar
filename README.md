@@ -141,3 +141,7 @@ Sur Kali, installer l'Active Response de preuve avec `sudo bash ops/wazuh/instal
 
 ### Windows Firewall containment V3.6
 See `docs/WINDOWS-EDR-V3.6.md`. The Wazuh 4.14 AR executor creates a temporary **remote public IPv4 only** inbound/outbound rule (120s), verifies effective firewall rules and records evidence. This is not full endpoint network isolation. Velociraptor is a separate open-source DFIR/EDR service and remains untouched; existing Wazuh proof collectors are reused.
+
+### V3.7 — Orchestration et Velociraptor
+
+Exécuter sur GCP `aegismesh-soar orchestrate status`, `aegismesh-soar orchestrate catalog`, `aegismesh-soar edr discover`, puis raccorder le certificat API mTLS **existant** de Velociraptor. Les tags EDR prennent leurs identifiants, confiance et preuves des décisions structurées déjà envoyées au bridge — aucune ressaisie interactive par incident. Documentation : `docs/ORCHESTRATION-EDR-V3.7.md`.

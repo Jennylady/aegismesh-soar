@@ -107,3 +107,11 @@
 - Sonde Orborus post-application ; annulation automatique si échec.
 - `aegismesh-soar network --undo-shuffle --confirm` : suppression de la seule règle gérée par SOAR.
 - Aucune réinstallation de Shuffle/Wazuh/Fail2ban ; tests locaux de politique.
+
+## V3.7.0 — Orchestration sans saisie répétée et EDR Velociraptor
+- `orchestrate status|catalog|recent|reconcile`: constat réel sans déclencher une décision.
+- `edr discover|configure|clients|link-auto|link|collect|status`: connexion gRPC mTLS du Velociraptor existant, inventaire et collecte d'artefact sécurisé.
+- `EDR_COLLECT` et `EDR_ISOLATE` reconnus par le bridge et soumis à la politique de décision, via Shuffle.
+- Quarantaine par label Quarantine sur agent non DC, score minimum 0.95, approbation, bail 300 s, timer de retrait et opération release.
+- `EDR_ISOLATE` est désactivé par défaut et ne prétend jamais que la quarantaine a été appliquée sur le réseau du poste sans preuve d'agent.
+- Aucun secret Velociraptor dans Git, aucune réinstallation ni changement AD. Normalisation LF sur code Linux via .gitattributes.

@@ -30,7 +30,8 @@ TAGS = {
     'WAZUH_AR_PROOF': 'wazuh_probe',
     'WAZUH_BLOCK_AGENT': 'wazuh_block',
     'WINDOWS_BLOCK_IP': 'windows_firewall_block',
-    'EDR_ISOLATE': 'not_implemented',
+    'EDR_COLLECT': 'edr_collection',
+    'EDR_ISOLATE': 'edr_quarantine',
     'AD_DISABLE_ACCOUNT': 'not_implemented',
 }
 RX_ID = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
@@ -124,8 +125,15 @@ def policy(data):
         raise PermissionError('approbation explicite manquante')
     if len(data.get('evidence_ids', [])) < 2 or data.get('confidence', 0) < 0.90:
         raise PermissionError('preuves / confiance insuffisantes')
-    if tag in ('EDR_ISOLATE', 'AD_DISABLE_ACCOUNT'):
-        raise PermissionError('tag désactivé : action endpoint critique non intégrée')
+    if tag == 'AD_DISABLE_ACCOUNT':
+        raise PermissionError('tag AD/LDAP désactivé : action non intégrée')
+    if tag == 'EDR_ISOLATE':
+        if not enabled('ENABLE_EDR_ISOLATION') or not enabled('ENABLE_PROD_ACTIONS'):
+            raise PermissionError('EDR isolation désactivée')
+        if data.get('confidence',0) < 0.95:
+            raise PermissionError('Confiance EDR isolation inférieure à 0.95')
+    if tag == 'EDR_COLLECT' and not enabled('ENABLE_PROD_ACTIONS'):
+        raise PermissionError('EDR collection non autorisée en production')
     if tag == 'F2B_TEST_BAN' and not enabled('ENABLE_TEST_ACTIONS'):
         raise PermissionError('ENABLE_TEST_ACTIONS=false')
     if tag == 'WAZUH_AR_PROOF' and not enabled('ENABLE_TEST_ACTIONS'):
@@ -602,6 +610,21 @@ def execute_tag(data):
         return wazuh_block_agent(data)
     if action == 'windows_firewall_block':
         return wazuh_block_windows(data)
+    if action in ('edr_collection','edr_quarantine'):
+        import sys
+        sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
+        from ops import edr_velociraptor as edr
+        agent=(data.get('target') or {}).get('agent_id')
+        if not isinstance(agent,str) or not RX_AGENT.fullmatch(agent) or agent=='000':
+            raise PermissionError('Agent EDR invalide')
+        cid=edr.linked(agent)
+        edr.valid_client(cid)
+        if action=='edr_collection':
+            rows=edr.api_query(edr.COLLECT,{'ClientId':cid})
+            if not rows:raise RuntimeError('Collecte Velociraptor non confirmée')
+            return {'effect':'edr_collection_queued','agent_id':agent,'client_id':cid,
+                    'collection_completed':False,'request':str(rows[0])[:160]}
+        return edr.request_quarantine(agent,data['decision_id'])
     raise PermissionError('action non implémentée')
 
 
@@ -746,7 +769,7 @@ class HTTP(BaseHTTPRequestHandler):
                     if parse_time(decision['expires_at']) <= dt.datetime.now(dt.timezone.utc):
                         raise PermissionError('décision expirée')
                     detail = execute_tag(decision)
-                    status, code = ('dispatched_unverified', 202) if detail.get('effect') == 'wazuh_ar_dispatched' else ('executed', 200)
+                    status, code = ('dispatched_unverified', 202) if detail.get('effect') in ('wazuh_ar_dispatched','edr_collection_queued','edr_quarantine_requested') else ('executed', 200)
                 except Exception as exc:
                     detail = {'error': type(exc).__name__, 'reason': str(exc)[:160]}
                     status, code = ('denied', 403) if isinstance(exc, PermissionError) else ('failed', 500)
@@ -777,7 +800,8 @@ def main():
         'PROTECTED_CIDRS', 'WAZUH_TEST_AGENTS', 'WAZUH_API_URL', 'WAZUH_USER',
         'WAZUH_PASSWORD', 'WAZUH_CA_FILE', 'WAZUH_TLS_INSECURE', 'WAZUH_PROD_AGENT_IDS',
         'WAZUH_WINDOWS_AGENT_IDS', 'WAZUH_WINDOWS_DC_AGENT_IDS',
-        'SHUFFLE_WEBHOOK_HEADER_NAME', 'SHUFFLE_WEBHOOK_HEADER_VALUE')})
+        'SHUFFLE_WEBHOOK_HEADER_NAME', 'SHUFFLE_WEBHOOK_HEADER_VALUE',
+        'ENABLE_EDR_ISOLATION','EDR_ISOLATION_AGENT_IDS')})
     for name in ('DECISION_TOKEN', 'SHUFFLE_ACTION_TOKEN'):
         if len(setting(name)) < 32:
             raise SystemExit(f'{name} needs at least 32 characters')

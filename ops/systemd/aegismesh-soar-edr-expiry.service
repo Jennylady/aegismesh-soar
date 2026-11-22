@@ -1,0 +1,7 @@
+[Unit]
+Description=AEGISMESH SOAR - retrait des quarantaines Velociraptor arrivées à échéance
+X-Aegismesh-Soar-Managed=yes
+After=docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/aegismesh/soar/ops/edr_velociraptor.py release-expired

@@ -122,8 +122,8 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py', ROOT/'tests/test_fleet_v34.py', ROOT/'tests/test_evidence_v35.py', ROOT/'tests/test_windows_diagnostics_v352.py', ROOT/'tests/test_windows_edr_v36.py']
-    for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar', ROOT/'ops/fleet.py', ROOT/'ops/wazuh/install_manager_evidence.py'):
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py', ROOT/'tests/test_fleet_v34.py', ROOT/'tests/test_evidence_v35.py', ROOT/'tests/test_windows_diagnostics_v352.py', ROOT/'tests/test_windows_edr_v36.py', ROOT/'tests/test_edr_orchestrator_v37.py']
+    for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar', ROOT/'ops/fleet.py', ROOT/'ops/wazuh/install_manager_evidence.py', ROOT/'ops/edr_velociraptor.py',ROOT/'ops/edr_enable.py',ROOT/'ops/orchestrate.py'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
         cmd([sys.executable, str(f)])
@@ -602,6 +602,10 @@ def main():
     d.add_argument('arguments',nargs=argparse.REMAINDER)
     fleet=sub.add_parser('fleet',help='Inventaire Wazuh et preuves d’exécution des agents via Shuffle')
     fleet.add_argument('arguments',nargs=argparse.REMAINDER)
+    edr=sub.add_parser('edr',help='Velociraptor : API mTLS, clients, investigation et désisolement')
+    edr.add_argument('arguments',nargs=argparse.REMAINDER)
+    orch=sub.add_parser('orchestrate',help='Vue unifiée et catalogue des actions sans saisie manuelle de score/IP')
+    orch.add_argument('arguments',nargs=argparse.REMAINDER)
     chain=sub.add_parser('chain',help='Raccorder et valider la chaîne Shuffle → Wazuh/Fail2ban')
     chain.add_argument('arguments',nargs=argparse.REMAINDER)
     d=sub.add_parser('decision',help='État d’une décision')
@@ -631,6 +635,10 @@ def main():
         cmd([sys.executable,str(ROOT/'ops/fleet.py')]+(args.arguments or ['status']))
     elif args.action=='chain':
         cmd([sys.executable,str(ROOT/'ops/chain.py')]+(args.arguments or ['status']))
+    elif args.action=='edr':
+        cmd([sys.executable,str(ROOT/'ops/edr_velociraptor.py')]+(args.arguments or ['status']))
+    elif args.action=='orchestrate':
+        cmd([sys.executable,str(ROOT/'ops/orchestrate.py')]+(args.arguments or ['status']))
     elif args.action=='service-status':cmd(['systemctl','--no-pager','status',UNIT],check=False)
     elif args.action=='logs':show_logs(args)
     elif args.action=='decision':
