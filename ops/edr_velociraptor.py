@@ -6,6 +6,7 @@ The server's existing, mTLS-authenticated API is used by its own CLI only.
 Quarantine is label-driven and NOT evidence of an applied network firewall.
 """
 import argparse
+import hashlib
 import datetime as dt
 try:
     import fcntl
@@ -24,14 +25,19 @@ CONF = Path('/etc/aegismesh-soar/velociraptor.json')
 MAPPING = Path('/var/lib/aegismesh-soar/edr-agent-map.json')
 LEASES = Path('/var/lib/aegismesh-soar/edr-quarantine-leases.json')
 LOCK = Path('/var/lib/aegismesh-soar/edr-lease.lock')
+FLOW_RECORDS = Path('/var/lib/aegismesh-soar/edr-flow-tracker.json')
 ENV = Path('/etc/aegismesh-soar/soar.env')
 RX_CLIENT = re.compile(r'C\.[0-9a-fA-F]{8,64}\Z')
 RX_AGENT = re.compile(r'\d{3}\Z')
+RX_FLOW = re.compile(r'F\.[A-Za-z0-9]{6,64}\Z')
 EXPIRY_TIMER = 'aegismesh-soar-edr-expiry.timer'
 SAFE_ARTIFACT = 'Generic.Client.Info'
 READ_CLIENTS = 'SELECT client_id, os_info.hostname AS hostname, os_info.system AS os, labels FROM clients() LIMIT 200'
 READ_LABEL = 'SELECT client_id, labels FROM clients(client_id=ClientId)'
 COLLECT = "SELECT collect_client(client_id=ClientId, artifacts='Generic.Client.Info', env=dict()) AS collection FROM scope()"
+READ_FLOWS = 'SELECT * FROM flows(client_id=ClientId) LIMIT 50'
+READ_FLOW = 'SELECT * FROM flows(client_id=ClientId, flow_id=FlowId) LIMIT 2'
+READ_FLOW_RESULTS = "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Generic.Client.Info/BasicInformation') LIMIT 20"
 SET_QUARANTINE = "SELECT label(client_id=ClientId, labels=['Quarantine'], op='set') AS result FROM scope()"
 REMOVE_QUARANTINE = "SELECT label(client_id=ClientId, labels=['Quarantine'], op='remove') AS result FROM scope()"
 
@@ -102,14 +108,14 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,READ_FLOWS,READ_FLOW,READ_FLOW_RESULTS,SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')
     cfg=validate_config(cfg if cfg is not None else read_json(CONF, {}))
     command=[cfg.get('binary','velociraptor'),'--api_config',cfg['api_config'],'query',query,'--format','jsonl']
     for k,v in (env or {}).items():
-        if k!='ClientId' or not RX_CLIENT.fullmatch(str(v)):
+        if not ((k=='ClientId' and RX_CLIENT.fullmatch(str(v))) or (k=='FlowId' and RX_FLOW.fullmatch(str(v)))):
             raise ValueError('Variable VQL non autorisée')
         command.extend(['--env',f'{k}={v}'])
     # The dedicated API certificate is root-owned (0600) inside the persisted Docker volume.
@@ -325,10 +331,114 @@ def install_timer():
     print('Timer de désisolement EDR actif (toutes les minutes)')
 
 
+
+
+def validate_flow_id(value):
+    if not RX_FLOW.fullmatch(str(value)):
+        raise ValueError('Flow ID Velociraptor invalide')
+    return str(value)
+
+
+def get_agent_flow_rows(agent):
+    # No raw client ID is accepted from the CLI. Strict Wazuh -> Velociraptor map.
+    cid=linked(agent)
+    valid_client(cid)
+    rows=api_query(READ_FLOWS,{'ClientId':cid})
+    return cid, [r for r in rows if RX_FLOW.fullmatch(str(r.get('flow_id','')))]
+
+
+def matching_flow(cid, flow_id):
+    validate_flow_id(flow_id)
+    # Filter locally too: no cross-client flow result can ever count as evidence.
+    rows=api_query(READ_FLOW,{'ClientId':cid,'FlowId':flow_id})
+    matched=[r for r in rows if r.get('flow_id')==flow_id and
+             (not r.get('client_id') or r.get('client_id')==cid)]
+    if len(matched)!=1:
+        raise ValueError('Flow absent ou non attribuable à ce client EDR')
+    return matched[0]
+
+
+def flow_state(row):
+    state=str(row.get('state') or row.get('State') or 'UNKNOWN').upper()
+    return state if state in ('RUNNING','FINISHED','ERROR','CANCELED','CANCELLED','WAITING','PENDING','UNRESPONSIVE') else 'UNKNOWN'
+
+
+def is_soar_flow(row, flow_id, tracked):
+    creator=str(row.get('creator') or (row.get('request') or {}).get('creator') or '').upper()
+    return flow_id in tracked or creator=='AEGISMESH_SOAR_API'
+
+
+def track_flow(agent, cid, flow_id, *, status='requested', result_count=None, result_hash=None):
+    validate_flow_id(flow_id)
+    history=read_json(FLOW_RECORDS,{})
+    row=history.get(flow_id,{})
+    if row and (row.get('agent_id')!=agent or row.get('client_id')!=cid):
+        raise PermissionError('Flow suivi déjà associé à un autre agent')
+    row.update({'agent_id':agent,'client_id':cid,'flow_id':flow_id,
+                'state':status,'artifact':SAFE_ARTIFACT,
+                'last_checked':dt.datetime.now(dt.timezone.utc).isoformat()})
+    if result_count is not None:row['result_rows']=result_count
+    if result_hash is not None:row['result_sha256']=result_hash
+    history[flow_id]=row
+    if len(history)>250:
+        history=dict(sorted(history.items(),key=lambda x:x[1].get('last_checked',''),reverse=True)[:250])
+    atomic_json(FLOW_RECORDS,history)
+
+
+def flow_status(agent, flow_id=None, *, include_result=True, persist=True):
+    cid, all_rows = get_agent_flow_rows(agent)
+    if flow_id is None:
+        if not all_rows:raise ValueError('Aucun flow Velociraptor pour cet agent')
+        flow_id=str(all_rows[0]['flow_id'])
+    validate_flow_id(flow_id)
+    row=matching_flow(cid,flow_id)
+    state=flow_state(row)
+    outcome={'agent_id':agent,'client_id':cid,'flow_id':flow_id,'state':state,
+             'artifacts':(row.get('request') or {}).get('artifacts',[]),
+             'total_collected_rows':row.get('total_collected_rows'),
+             'result_rows_sampled':None,'sample_sha256':None,
+             'collection_finished':state=='FINISHED','results_present':False}
+    # Results accessible only for a verified FINISHED Generic.Client.Info collection.
+    requested=outcome['artifacts']
+    if include_result and state=='FINISHED' and isinstance(requested,list) and SAFE_ARTIFACT in requested:
+        result=api_query(READ_FLOW_RESULTS,{'ClientId':cid,'FlowId':flow_id})
+        outcome['result_rows_sampled']=len(result)
+        outcome['sample_sha256']=hashlib.sha256(json.dumps(result,sort_keys=True,ensure_ascii=False,
+            separators=(',',':')).encode('utf-8')).hexdigest()
+        outcome['results_present']=len(result)>0
+    if persist and (is_soar_flow(row,flow_id,read_json(FLOW_RECORDS,{}))):
+        track_flow(agent,cid,flow_id,status=state,result_count=outcome['result_rows_sampled'],
+                   result_hash=outcome['sample_sha256'])
+    return outcome
+
+
+def flow_list(agent=None, *, only_soar=False):
+    mapping=read_json(MAPPING,{})
+    agents=[agent] if agent is not None else sorted(mapping)
+    tracked=read_json(FLOW_RECORDS,{})
+    output=[]
+    for aid in agents:
+        cid,rows=get_agent_flow_rows(aid)
+        for row in rows[:25]:
+            fid=str(row['flow_id'])
+            if only_soar and not is_soar_flow(row,fid,tracked):continue
+            output.append({'agent_id':aid,'client_id':cid,'flow_id':fid,
+                           'state':flow_state(row),
+                           'artifacts':(row.get('request') or {}).get('artifacts',[]),
+                           'soar_initiated':is_soar_flow(row,fid,tracked)})
+    return output[:120]
+
+
 def main(argv=None):
     p=argparse.ArgumentParser(description='AEGISMESH-SOAR / EDR Velociraptor existant')
     s=p.add_subparsers(dest='action',required=True)
     s.add_parser('discover'); s.add_parser('status'); s.add_parser('clients'); s.add_parser('link-auto')
+    flow_cmd=s.add_parser('flows',help='Lister les collectes réelles Velociraptor, lecture seule')
+    flow_cmd.add_argument('--agent-id')
+    flow_state_cmd=s.add_parser('flow-status',help='Statut et empreinte des résultats réels du flow')
+    flow_state_cmd.add_argument('--agent-id',required=True);flow_state_cmd.add_argument('--flow-id')
+    inv=s.add_parser('investigations',help='Collectes lancées par SOAR et leur état, lecture seule')
+    inv.add_argument('--agent-id')
     config=s.add_parser('configure',help='Réutilise une configuration API mTLS Velociraptor EXISTANTE')
     config.add_argument('--mode',choices=['host','docker'],required=True)
     config.add_argument('--container',default='')
@@ -364,6 +474,16 @@ def main(argv=None):
             print('Agents liés:',read_json(MAPPING,{}))
             print('Baux de quarantaine SOAR:',list(read_json(LEASES,{})))
             print('La présence du label n’est pas la preuve de l’isolement effectif du réseau')
+        elif a.action in ('flows','investigations'):
+            rows=flow_list(getattr(a,'agent_id',None),only_soar=a.action=='investigations')
+            if not rows:print('Aucune collecte correspondante retrouvée sur le serveur Velociraptor')
+            else:
+                for row in rows:
+                    print(row['agent_id'],row['flow_id'],row['state'],
+                          'SOAR' if row['soar_initiated'] else 'externe',
+                          ','.join(row['artifacts']) if isinstance(row['artifacts'],list) else '?')
+        elif a.action=='flow-status':
+            print(json.dumps(flow_status(a.agent_id,a.flow_id),ensure_ascii=False,indent=2))
         elif a.action=='clients':
             if not CONF.exists():
                 raise RuntimeError('API mTLS absente : exécuter edr doctor, puis edr setup ou edr bootstrap')
@@ -403,7 +523,15 @@ def main(argv=None):
             else:
                 rows=api_query(COLLECT,{'ClientId':cid})
                 if not rows:raise RuntimeError('Aucun flow de collecte confirmé')
-                print('Collecte demandée (asynchrone), résultat API:',json.dumps(rows,ensure_ascii=False)[:600])
+                flow_id=str((rows[0].get('collection') or {}).get('flow_id',''))
+                if RX_FLOW.fullmatch(flow_id):
+                    try: track_flow(a.agent_id,cid,flow_id)
+                    except OSError:
+                        print('AVERTISSEMENT: collecte acceptée mais suivi local non enregistré',file=sys.stderr)
+                    print('Collecte demandée, agent:',a.agent_id,'flow_id:',flow_id,'état: queued (non vérifié)')
+                    print('Suivi: aegismesh-soar edr flow-status --agent-id',a.agent_id,'--flow-id',flow_id)
+                else:
+                    print('Collecte acceptée par API mais flow_id absent ou invalide; vérifier Velociraptor')
         elif a.action=='allow-isolation':
             if not a.confirm:raise PermissionError('Confirmation --confirm requise')
             if not RX_AGENT.fullmatch(a.agent_id) or a.agent_id in ('000','006'):

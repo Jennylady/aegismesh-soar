@@ -149,3 +149,14 @@ Exécuter sur GCP `aegismesh-soar orchestrate status`, `aegismesh-soar orchestra
 ### Raccorder le Velociraptor existant (V3.7.1)
 
 `aegismesh-soar edr doctor` affiche le conteneur et les chemins de configuration **sans secrets**. `aegismesh-soar edr setup --confirm` accepte une configuration API mTLS existante après test réel. Si aucune clé API n'est présente et qu'un volume Docker persistant est détecté : `aegismesh-soar edr bootstrap --confirm --allow-restart` crée une identité API limitée aux rôles `api,investigator` et redémarre **le conteneur Velociraptor uniquement**, après accord explicite. Consulter `docs/EDR-DOCKER-V3.7.1.md`.
+
+### Suivi EDR (V3.7.2)
+
+```bash
+aegismesh-soar edr flows
+aegismesh-soar edr flow-status --agent-id 001 --flow-id F.DC1APVLV8NO1Q
+aegismesh-soar edr flow-status --agent-id 002 --flow-id F.DC1B583LF7L32
+aegismesh-soar edr investigations
+```
+
+L'API Velociraptor est interrogée en lecture seule. Un flow `FINISHED` n'implique pas automatiquement des résultats : `result_rows_sampled`, `sample_sha256` et `results_present` sont renvoyés séparément. Le suivi local est dans `/var/lib/aegismesh-soar/edr-flow-tracker.json` (hors Git).

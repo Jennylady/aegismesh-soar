@@ -1,3 +1,10 @@
+## 3.7.2 — Suivi réel des flows Velociraptor
+
+- `edr flows`, `edr flow-status`, `edr investigations` lisent les flows du serveur, sans nouvelles actions distantes.
+- Association agent/client et flow vérifiée; résultats Generic.Client.Info limités et empreinte SHA256, sans contenu sensible dans les journaux.
+- `edr collect` conserve désormais le Flow ID dans un registre privé.
+- Aucun changement Wazuh, Shuffle, Fail2ban ni politiques d’isolement.
+
 ## V3.6.0 — Windows response via Wazuh Active Response + Windows Firewall
 - Windows action `WINDOWS_BLOCK_IP` uses the verified Shuffle → bridge → Wazuh workflow, targeting only a single public IPv4 for 120 seconds.
 - Windows LAB and DC agents have separate allowlists. Domain Controllers require explicit consent on both manager and endpoint; EDR_ISOLATE remains disabled.
