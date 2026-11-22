@@ -6,7 +6,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent.parent/'soar'))
 import bridge
 
 banned=set()
-old_get,old_set=bridge.f2b_get_bans,bridge.f2b_set
+old_get,old_set,old_nft=bridge.f2b_get_bans,bridge.f2b_set,bridge.f2b_nft_confirmed
 try:
     bridge.f2b_get_bans=lambda jail: set(banned)
     def mock_set(jail, operation, ip):
@@ -16,11 +16,13 @@ try:
         elif operation == 'unbanip': banned.discard(ip)
         else: raise AssertionError(operation)
     bridge.f2b_set=mock_set
+    bridge.f2b_nft_confirmed=lambda ip: ip in banned
     result=bridge.fail2ban_action({'target':{'ip':'198.51.100.42'}},test=True)
     assert result['banned_verified'] is True and result['unban_verified'] is True
+    assert result['nftables_verified_during_ban'] and result['nftables_removed_verified']
     assert not banned, 'test must clean up the temporary ban'
 finally:
-    bridge.f2b_get_bans,bridge.f2b_set=old_get,old_set
+    bridge.f2b_get_bans,bridge.f2b_set,bridge.f2b_nft_confirmed=old_get,old_set,old_nft
 
 old_api,old_proof=bridge.wazuh_api_request,bridge.local_wazuh_proof
 old_env=dict(bridge.ENV)

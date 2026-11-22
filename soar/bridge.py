@@ -328,64 +328,137 @@ def f2b_bantime_seconds(jail):
     return seconds
 
 
-def f2b_nft_confirmed(ip):
-    """Require an nftables element in the Fail2ban SOAR jail set, not an unrelated rule.
-
-    The existing deployment has an nftables action. Fail closed if nft is not
-    queryable or uses a different/unverified set layout.
-    """
+def _f2b_nft_ipv4_element(value):
+    """Canonical IPv4 address from nft JSON. Never use fuzzy string matching."""
+    if isinstance(value, dict) and 'elem' in value:
+        value = value['elem']
+        if isinstance(value, dict):
+            value = value.get('val')
     try:
-        proc = subprocess.run(['nft','-j','list','ruleset'],capture_output=True,text=True,timeout=10)
-        if proc.returncode:
-            return False
-        entries = json.loads(proc.stdout).get('nftables', [])
-        candidates=[]
-        referenced=set()
-        for entry in entries:
-            if 'set' in entry:
-                candidate=entry['set']
-                if 'aegismesh-soar-gcp' in str(candidate.get('name','')):
-                    candidates.append(candidate)
-            elif 'rule' in entry:
-                referenced.add(json.dumps(entry['rule'].get('expr',[])))
-        for entry in candidates:
-            name=str(entry.get('name',''))
-            elements=json.dumps(entry.get('elem',[]))
-            if name and re.search(r'(?<![\d.])'+re.escape(ip)+r'(?![\d.])', elements) and any(name in e for e in referenced):
-                return True
-    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
-        pass
-    return False
+        if not isinstance(value, str):
+            return None
+        return str(ipaddress.IPv4Address(value))
+    except ipaddress.AddressValueError:
+        return None
+
+
+def f2b_nft_confirmed(ip):
+    """Verify exact SOAR nftables topology AND IPv4 membership.
+
+    Expected live topology (GCP, 22 Nov 2026):
+      table inet aegismesh_soar_gcp
+      set aegismesh_block_v4 (ipv4_addr)
+      chain aegismesh_input (input hook)
+      rule tcp dport 443 ip saddr @aegismesh_block_v4 drop
+
+    A missing/unreadable/unexpected ruleset raises: absence of a table is not
+    evidence that a temporary ban was successfully removed. The caller must
+    fail closed. Returns False *only* with a verified rule and no IP element.
+    """
+    ip = str(ipaddress.IPv4Address(ip))
+    try:
+        proc = subprocess.run(['nft', '-j', 'list', 'table', 'inet', 'aegismesh_soar_gcp'],
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError('nftables inaccessible, état du confinement inconnu') from exc
+    if proc.returncode:
+        raise RuntimeError('Table nftables SOAR inaccessible')
+    try:
+        entries = json.loads(proc.stdout)['nftables']
+    except (TypeError, ValueError, KeyError) as exc:
+        raise RuntimeError('Réponse JSON nftables SOAR invalide') from exc
+    if not isinstance(entries, list):
+        raise RuntimeError('Réponse nftables non structurée')
+    table = False
+    target_set = None
+    target_chain = False
+    valid_drop_rule = False
+    expected = ('inet', 'aegismesh_soar_gcp')
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        obj = entry.get('table')
+        if isinstance(obj, dict) and (obj.get('family'), obj.get('name')) == expected:
+            table = True
+        obj = entry.get('set')
+        if isinstance(obj, dict) and (obj.get('family'), obj.get('table'), obj.get('name')) == (
+                'inet', 'aegismesh_soar_gcp', 'aegismesh_block_v4'):
+            if obj.get('type') != 'ipv4_addr' or target_set is not None:
+                raise RuntimeError('Ensemble nftables SOAR absent ou ambigu')
+            target_set = obj
+        obj = entry.get('chain')
+        if isinstance(obj, dict) and (obj.get('family'),obj.get('table'),obj.get('name')) == (
+                'inet','aegismesh_soar_gcp','aegismesh_input'):
+            if obj.get('type') == 'filter' and obj.get('hook') == 'input':
+                target_chain = True
+        obj = entry.get('rule')
+        if not isinstance(obj, dict) or (obj.get('family'),obj.get('table'),obj.get('chain')) != (
+                'inet','aegismesh_soar_gcp','aegismesh_input'):
+            continue
+        expr = obj.get('expr')
+        if not isinstance(expr, list):
+            continue
+        port = source_set = verdict = False
+        for part in expr:
+            if not isinstance(part, dict):
+                continue
+            match = part.get('match')
+            if isinstance(match, dict) and match.get('op') == '==':
+                left, right = match.get('left'), match.get('right')
+                payload = left.get('payload') if isinstance(left, dict) else None
+                if payload == {'protocol': 'tcp', 'field': 'dport'} and right == 443:
+                    port = True
+                if payload == {'protocol': 'ip', 'field': 'saddr'} and right == '@aegismesh_block_v4':
+                    source_set = True
+            if 'drop' in part:
+                verdict = True
+        # Reject unrelated extra matches that might alter packet-matching scope.
+        if port and source_set and verdict and len(expr) == 3:
+            valid_drop_rule = True
+    if not (table and target_set is not None and target_chain and valid_drop_rule):
+        raise RuntimeError('Chaîne nftables SOAR inattendue : impossible de prouver le filtrage')
+    elements = target_set.get('elem', [])
+    if not isinstance(elements, list):
+        raise RuntimeError('Éléments nftables SOAR illisibles')
+    return ip in {_f2b_nft_ipv4_element(item) for item in elements}
 
 
 def fail2ban_action(data, test=False):
-    jail = 'aegismesh-soar-gcp'  # fixed to existing project jail; never touch sshd
+    jail = 'aegismesh-soar-gcp'  # Never touch SSH jail.
     ip = ipcheck(data['target'].get('ip'), test=test)
     bantime = f2b_bantime_seconds(jail) if not test else 120
-    before = f2b_get_bans(jail)
-    if ip in before:
+    if ip in f2b_get_bans(jail):
         raise PermissionError('IP déjà bannie : refus de modifier un bannissement préexistant')
+    if test and f2b_nft_confirmed(ip):
+        raise PermissionError('IP de test déjà présente dans nftables : refus de modifier un élément préexistant')
     applied = False
     try:
         f2b_set(jail, 'banip', ip)
         applied = True
         if ip not in f2b_get_bans(jail):
             raise RuntimeError('commande reçue mais IP non visible dans la jail')
-        if test:
-            return {'effect': 'test_ban_and_unban', 'banned_verified': True,
-                    'unban_verified': True, 'ip': ip, 'jail': jail}
         if not f2b_nft_confirmed(ip):
-            # The jail may report an IP without installing a packet-filter rule.
-            # Roll back our newly added ban rather than reporting a false success.
+            raise RuntimeError('Bannissement non présent dans le set nftables SOAR')
+        if not test:
+            return {'effect': 'temporary_ban', 'banned_verified': True,
+                    'nftables_verified': True, 'ip': ip, 'jail': jail,
+                    'port': 443, 'duration_seconds': bantime}
+    except Exception:
+        if applied and not test:
+            # Always roll back a newly created ban if nft verification is false,
+            # malformed or unavailable. Never delete bans that preceded us.
             f2b_set(jail, 'unbanip', ip)
-            raise RuntimeError('Bannissement non confirmé dans nftables : retrait de la règle Fail2ban SOAR')
-        return {'effect': 'temporary_ban', 'banned_verified': True,
-                'nftables_verified': True, 'ip': ip, 'jail': jail, 'duration_seconds': bantime}
+        raise
     finally:
         if test and applied:
             f2b_set(jail, 'unbanip', ip)
             if ip in f2b_get_bans(jail):
-                raise RuntimeError('test : IP encore bannie après unban')
+                raise RuntimeError('test : IP encore bannie dans Fail2ban après unban')
+            if f2b_nft_confirmed(ip):
+                raise RuntimeError('test : IP encore présente dans nftables après unban')
+    return {'effect': 'test_ban_and_unban', 'banned_verified': True,
+            'nftables_verified_during_ban': True, 'unban_verified': True,
+            'nftables_removed_verified': True, 'ip': ip, 'jail': jail, 'port': 443}
 
 
 def wazuh_api_request(method, path, body, headers=None, raw=False):

@@ -1,3 +1,10 @@
+## 4.2.5 — Vérification de la chaîne Fail2ban/nftables GCP
+- Reconnaissance exacte de `inet aegismesh_soar_gcp`, set `aegismesh_block_v4`, chaîne d’entrée et règle `tcp dport 443 ... drop` via `nft -j`.
+- Bannissement de test `198.51.100.42` : preuve de présence dans nftables pendant le ban, absence après l’unban ; aucune IP réelle testée.
+- Erreur explicite en cas de règles absentes, inattendues ou JSON illisible ; impossibilité de déclarer `removed` sur simple absence du set.
+- Retour arrière du ban de production nouvellement posé si la vérification nftables échoue ou lève une exception.
+- Aucun changement Wazuh, Docker, Tenzir, Nginx, IP de gestion, ni règle nftables statique.
+
 ## V4.2.4 — Surcharge Compose ciblée, sans parser le YAML d origine
 
 - Corrige `Bloc Compose services.orborus introuvable ou ambigu` provoqué par un éditeur qui supposait exactement deux espaces d indentation.
