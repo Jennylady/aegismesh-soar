@@ -1,3 +1,10 @@
+## 3.7.3 — Correction du schéma réel des flows Velociraptor
+
+- Prend en charge les propriétés VQL `FlowId`, `ClientId`, `State`, `Request`, `Creator` et leurs variantes snake_case.
+- Contrôle la correspondance exacte entre Wazuh, client EDR et Flow ID; tout schéma inconnu ou incohérent produit une erreur explicite, jamais un faux `aucune collecte`.
+- Les commandes `edr flows`, `edr flow-status`, `edr investigations` restent en lecture seule.
+- Aucun changement des exécutants, agents, ACL, certificats, Wazuh, Shuffle, Fail2ban, ou quarantaine.
+
 ## 3.7.2 — Suivi réel des flows Velociraptor
 
 - `edr flows`, `edr flow-status`, `edr investigations` lisent les flows du serveur, sans nouvelles actions distantes.

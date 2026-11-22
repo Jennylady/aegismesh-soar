@@ -339,20 +339,70 @@ def validate_flow_id(value):
     return str(value)
 
 
+def _field(row, *names):
+    # Velociraptor flows() returns FlowId / ClientId / Request / Creator in
+    # several server versions, while collect_client() returns snake_case.
+    # Reject contradictory aliases rather than silently attributing a
+    # collection to the wrong endpoint.
+    present = [row[n] for n in names if n in row and row[n] is not None]
+    if len(present) > 1 and any(x != present[0] for x in present[1:]):
+        raise ValueError('Réponse EDR incohérente : noms de champs contradictoires')
+    return present[0] if present else None
+
+
+def normalize_flow(row, expected_client):
+    """Canonicalize documented VQL flows() fields, preserving attribution."""
+    if not isinstance(row, dict):
+        raise ValueError('Réponse Velociraptor flows() non structurée')
+    fid=_field(row,'FlowId','flow_id','flowId','FlowID')
+    if fid is None:
+        raise ValueError('Schéma flows() non reconnu : FlowId absent (champs: ' +
+                         ','.join(sorted(str(k) for k in row)[:15]) + ')')
+    # Some rows can be pre-existing, malformed collections: don't claim they
+    # are real flows; only explicitly valid Velociraptor IDs are accepted.
+    validate_flow_id(fid)
+    cid=_field(row,'ClientId','client_id','clientId','ClientID')
+    if cid is not None and cid != expected_client:
+        raise ValueError('Flow retourné pour un autre client EDR')
+    req=_field(row,'Request','request') or {}
+    if not isinstance(req,dict):
+        req={}
+    artifacts=_field(req,'Artifacts','artifacts')
+    if artifacts is None:
+        artifacts=_field(row,'Artifacts','artifacts')
+    if isinstance(artifacts,str):artifacts=[artifacts]
+    if not isinstance(artifacts,list):artifacts=[]
+    creator=_field(row,'Creator','creator')
+    if creator is None:creator=_field(req,'Creator','creator')
+    state=_field(row,'State','state')
+    if state is None:
+        context=_field(row,'Context','context') or {}
+        if isinstance(context,dict):state=_field(context,'State','state')
+    rows=_field(row,'TotalCollectedRows','total_collected_rows','totalCollectedRows')
+    return {
+        'client_id':expected_client,'flow_id':str(fid),
+        'state':state or 'UNKNOWN','creator':creator or '',
+        'request':{'artifacts':artifacts,'creator':creator or ''},
+        'total_collected_rows':rows
+    }
+
+
 def get_agent_flow_rows(agent):
-    # No raw client ID is accepted from the CLI. Strict Wazuh -> Velociraptor map.
     cid=linked(agent)
     valid_client(cid)
-    rows=api_query(READ_FLOWS,{'ClientId':cid})
-    return cid, [r for r in rows if RX_FLOW.fullmatch(str(r.get('flow_id','')))]
+    raw=api_query(READ_FLOWS,{'ClientId':cid})
+    # Never silently drop rows due to a server version's property case.
+    # An unknown schema should be reported explicitly, not as "no flows".
+    return cid,[normalize_flow(r,cid) for r in raw]
 
 
 def matching_flow(cid, flow_id):
     validate_flow_id(flow_id)
-    # Filter locally too: no cross-client flow result can ever count as evidence.
     rows=api_query(READ_FLOW,{'ClientId':cid,'FlowId':flow_id})
-    matched=[r for r in rows if r.get('flow_id')==flow_id and
-             (not r.get('client_id') or r.get('client_id')==cid)]
+    matched=[]
+    for original in rows:
+        row=normalize_flow(original,cid)
+        if row['flow_id']==flow_id:matched.append(row)
     if len(matched)!=1:
         raise ValueError('Flow absent ou non attribuable à ce client EDR')
     return matched[0]

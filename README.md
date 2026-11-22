@@ -160,3 +160,7 @@ aegismesh-soar edr investigations
 ```
 
 L'API Velociraptor est interrogée en lecture seule. Un flow `FINISHED` n'implique pas automatiquement des résultats : `result_rows_sampled`, `sample_sha256` et `results_present` sont renvoyés séparément. Le suivi local est dans `/var/lib/aegismesh-soar/edr-flow-tracker.json` (hors Git).
+
+### Correctif V3.7.3 : schéma Velociraptor des flows
+
+`flows()` peut exposer `FlowId`/`ClientId`/`State` plutôt que les propriétés snake_case de `collect_client()`. Le suivi normalise les deux formats et refuse une attribution incohérente. Les anciens Flow IDs sont conservés, sans nouvelle collecte ni réinstallation.
