@@ -1,3 +1,11 @@
+## 4.1.0 — Diagnostic de la chaîne SOAR vérifiable (sans action)
+
+- `chain status` distingue le header webhook sortant facultatif du jeton de rappel Shuffle obligatoire.
+- Le retour Shuffle est établi par un callback **historique authentifié** et exécuté enregistré en base ; il n’est jamais présenté comme une preuve de disponibilité en temps réel.
+- La confiance TLS Wazuh reflète le certificat local exploité sur l’API loopback ou une CA explicite, sans prétendre que le handshake HTTPS a été testé.
+- Aucun changement aux secrets, configurations de production, pare-feu, Wazuh, Shuffle, Velociraptor ou moteur de décision.
+- Test de non-régression de la lecture SQLite et de l’affichage d’états.
+
 ## 4.0.1 — Tests EDR multiplateformes (2026-11-22)
 - `test_edr_triage_v40.py` simule explicitement le contrôle root pour les tests hors production Windows/Linux; tous les appels EDR et les écritures sont simulés.
 - `require_root()` refuse proprement l'absence de `os.geteuid` sous Windows (PermissionError au lieu d'AttributeError) et continue d'exiger root sur Linux GCP.

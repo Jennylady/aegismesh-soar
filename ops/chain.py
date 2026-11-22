@@ -5,6 +5,7 @@ Invoked as `aegismesh-soar chain ...`; standard library only. Does NOT
 modify existing Wazuh, Fail2ban, Shuffle or AEGISMESH services implicitly.
 """
 import argparse
+import datetime as dt
 import json
 import os
 from pathlib import Path
@@ -56,16 +57,72 @@ def check_http_health(config):
         return False
 
 
+def last_verified_shuffle_callback(cfg):
+    """Historical proof of authenticated /v1/execute callback, never a live probe.
+
+    Only /v1/execute writes execution_id after token verification; action_status
+    is set by that same callback. No new security action or webhook POST occurs.
+    Fail closed when the local DB is unavailable or lacks the expected schema.
+    """
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from soar import bridge
+        # The CLI is a separate process; only touch its in-process settings.
+        bridge.ENV.clear()
+        bridge.ENV.update(cfg)
+        bridge.DB = cfg.get('SOAR_DB', '/var/lib/aegismesh-soar/decisions.sqlite3')
+        with bridge.dbconn() as db:
+            row = db.execute("""SELECT tag, updated_at FROM decisions
+                WHERE action_status='executed' AND execution_id IS NOT NULL
+                AND execution_id <> '' ORDER BY updated_at DESC LIMIT 1""").fetchone()
+        if not row:
+            return 'NON PROUVÉ', 'aucun rappel exécuté dans l’historique local'
+        raw = row['updated_at']
+        when = dt.datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        if when.tzinfo is None:
+            return 'HISTORIQUE', 'date sans fuseau ; disponibilité actuelle non prouvée'
+        age = dt.datetime.now(dt.timezone.utc) - when.astimezone(dt.timezone.utc)
+        if age.total_seconds() < -300:
+            return 'HISTORIQUE', 'horodatage futur ; horloges à vérifier'
+        label = 'RÉCENT PROUVÉ' if age <= dt.timedelta(hours=24) else 'HISTORIQUE'
+        return label, f"dernier rappel authentifié : {row['tag']} · {when.isoformat()} ; pas un test temps réel"
+    except (Exception,) as exc:
+        # Never expose DB credentials or connection strings from exceptions.
+        return 'INCONNU', f"historique inaccessible ({type(exc).__name__})"
+
+
+def wazuh_tls_configuration(cfg):
+    """Describe configured trust, not a successful TLS handshake."""
+    if cfg.get('WAZUH_TLS_INSECURE', '').lower() == 'true':
+        return 'REFUSÉ', 'TLS non vérifié interdit par le bridge'
+    explicit = cfg.get('WAZUH_CA_FILE', '')
+    if explicit:
+        if Path(explicit).is_file():
+            return 'CA EXPLICITE', 'fichier présent ; lancer chain wazuh-check pour tester HTTPS'
+        return 'CA ABSENTE', 'chemin configuré, fichier introuvable'
+    from urllib.parse import urlsplit
+    parsed = urlsplit(cfg.get('WAZUH_API_URL', 'https://127.0.0.1:55000'))
+    local = parsed.hostname in ('127.0.0.1', 'localhost', '::1') and (parsed.port or 443) == 55000
+    if local and Path('/var/ossec/api/configuration/ssl/server.crt').is_file():
+        return 'CERT. LOCAL', 'certificat Wazuh présent ; HTTPS à valider avec chain wazuh-check'
+    return 'À VÉRIFIER', 'confiance TLS non établie ; lancer chain wazuh-check'
+
+
 def report():
     cfg=settings()
     print('AEGISMESH SOAR · chaîne décision → Shuffle → Wazuh / Fail2ban')
     info('Bridge', 'OK' if check_http_health(cfg) else 'ÉCHEC', f"{cfg.get('SOAR_BIND_HOST','127.0.0.1')}:{cfg.get('SOAR_PORT','19081')}")
     info('Shuffle webhook', 'CONFIGURÉ' if cfg.get('SHUFFLE_WEBHOOK_URL') else 'MANQUANT')
-    info('Auth webhook', 'CONFIGURÉ' if cfg.get('SHUFFLE_WEBHOOK_HEADER_NAME') and cfg.get('SHUFFLE_WEBHOOK_HEADER_VALUE') else 'MANQUANT')
-    info('Retour HTTP Shuffle', 'À TESTER', 'Le worker doit atteindre /v1/execute')
+    outbound_header = bool(cfg.get('SHUFFLE_WEBHOOK_HEADER_NAME') and cfg.get('SHUFFLE_WEBHOOK_HEADER_VALUE'))
+    info('Auth webhook sortant', 'CONFIGURÉ' if outbound_header else 'OPTIONNEL',
+         'header du déclencheur Shuffle ; contrôler ses exigences si absent')
+    history_state, history_detail = last_verified_shuffle_callback(cfg)
+    info('Retour Shuffle (passé)', history_state, history_detail)
     info('Wazuh manager', service_state('wazuh-manager.service'))
     info('Identifiants Wazuh', 'CONFIGURÉ' if cfg.get('WAZUH_USER') and cfg.get('WAZUH_PASSWORD') else 'MANQUANT')
-    info('Wazuh CA TLS', 'CONFIGURÉ' if cfg.get('WAZUH_CA_FILE') else 'À VÉRIFIER')
+    tls_state, tls_detail = wazuh_tls_configuration(cfg)
+    info('Confiance TLS Wazuh', tls_state, tls_detail)
     info('Fail2ban',service_state('fail2ban.service'))
     p=cmd(['fail2ban-client','status','aegismesh-soar-gcp'])
     info('Jail SOAR', 'OK' if p is not None and p.returncode == 0 else 'ÉCHEC')
@@ -76,6 +133,8 @@ def report():
         print('\n  ATTENTION : le port est lié au loopback de l’hôte. Un worker Shuffle Docker')
         print('  ne peut pas joindre 127.0.0.1 de l’hôte via son propre localhost.')
         print('  Choisir une adresse de passerelle Docker locale après `aegismesh-soar network`.')
+    print('  Ce diagnostic ne teste pas l’accès HTTP actuel du worker Shuffle.')
+    print('  Vérifier séparément : aegismesh-soar network --check ; aegismesh-soar chain wazuh-check')
     print('  Aucune action de sécurité déclenchée par ce diagnostic.')
 
 
