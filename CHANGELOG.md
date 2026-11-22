@@ -1,3 +1,10 @@
+## 3.7.4 — Compatibilité du schéma `session_id` de Velociraptor
+
+- Le flow VQL possède `session_id`, et pas seulement `FlowId` ou `flow_id`; valeurs contradictoires refusées.
+- Validation croisée des identifiants en entête et dans `request` lorsque présents.
+- État absent : lecture complémentaire via `get_flow()` authentifié, sans considérer une valeur inconnue comme FINISHED.
+- Aucun déploiement agent, nouveau flow, modification de quarantaine ou redémarrage de Velociraptor.
+
 ## 3.7.3 — Correction du schéma réel des flows Velociraptor
 
 - Prend en charge les propriétés VQL `FlowId`, `ClientId`, `State`, `Request`, `Creator` et leurs variantes snake_case.

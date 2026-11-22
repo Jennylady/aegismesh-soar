@@ -1,3 +1,7 @@
+### Correctif 3.7.4 — schéma des collectes
+
+`edr flows`, `edr flow-status` et `edr investigations` reconnaissent `session_id` tel que retourné par le serveur Velociraptor. Si `state` est absent, l'outil consulte `get_flow()` sans jamais attribuer un état final par déduction. Voir `docs/EDR-FLOWS-V3.7.4.md`.
+
 # AEGISMESH-SOAR — dépôt autonome
 
 Projet d'orchestration SOAR de **la personne 2** (Shuffle, Wazuh Active Response, Fail2ban, puis EDR / AD). La personne 1 conserve la détection, les graphes, le scoring et la production des décisions/incidents.

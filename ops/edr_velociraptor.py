@@ -37,6 +37,7 @@ READ_LABEL = 'SELECT client_id, labels FROM clients(client_id=ClientId)'
 COLLECT = "SELECT collect_client(client_id=ClientId, artifacts='Generic.Client.Info', env=dict()) AS collection FROM scope()"
 READ_FLOWS = 'SELECT * FROM flows(client_id=ClientId) LIMIT 50'
 READ_FLOW = 'SELECT * FROM flows(client_id=ClientId, flow_id=FlowId) LIMIT 2'
+READ_FLOW_DETAILS = 'SELECT get_flow(client_id=ClientId, flow_id=FlowId) AS details FROM scope() LIMIT 1'
 READ_FLOW_RESULTS = "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Generic.Client.Info/BasicInformation') LIMIT 20"
 SET_QUARANTINE = "SELECT label(client_id=ClientId, labels=['Quarantine'], op='set') AS result FROM scope()"
 REMOVE_QUARANTINE = "SELECT label(client_id=ClientId, labels=['Quarantine'], op='remove') AS result FROM scope()"
@@ -108,7 +109,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,READ_FLOWS,READ_FLOW,READ_FLOW_RESULTS,SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')
@@ -354,9 +355,9 @@ def normalize_flow(row, expected_client):
     """Canonicalize documented VQL flows() fields, preserving attribution."""
     if not isinstance(row, dict):
         raise ValueError('Réponse Velociraptor flows() non structurée')
-    fid=_field(row,'FlowId','flow_id','flowId','FlowID')
+    fid=_field(row,'FlowId','flow_id','flowId','FlowID','SessionId','session_id','sessionId')
     if fid is None:
-        raise ValueError('Schéma flows() non reconnu : FlowId absent (champs: ' +
+        raise ValueError('Schéma flows() non reconnu : FlowId/session_id absents (champs: ' +
                          ','.join(sorted(str(k) for k in row)[:15]) + ')')
     # Some rows can be pre-existing, malformed collections: don't claim they
     # are real flows; only explicitly valid Velociraptor IDs are accepted.
@@ -367,6 +368,14 @@ def normalize_flow(row, expected_client):
     req=_field(row,'Request','request') or {}
     if not isinstance(req,dict):
         req={}
+    # A remote flow may echo its intended endpoint in the request as well.
+    # Reject divergent ownership even when the top-level client_id is valid.
+    req_cid=_field(req,'ClientId','client_id','clientId','ClientID')
+    if req_cid is not None and req_cid != expected_client:
+        raise ValueError('Flow request attribuée à un autre client EDR')
+    req_fid=_field(req,'FlowId','flow_id','SessionId','session_id')
+    if req_fid is not None and req_fid != fid:
+        raise ValueError('Flow request avec identifiant contradictoire')
     artifacts=_field(req,'Artifacts','artifacts')
     if artifacts is None:
         artifacts=_field(row,'Artifacts','artifacts')
@@ -379,12 +388,18 @@ def normalize_flow(row, expected_client):
         context=_field(row,'Context','context') or {}
         if isinstance(context,dict):state=_field(context,'State','state')
     rows=_field(row,'TotalCollectedRows','total_collected_rows','totalCollectedRows')
-    return {
+    normalized={
         'client_id':expected_client,'flow_id':str(fid),
         'state':state or 'UNKNOWN','creator':creator or '',
         'request':{'artifacts':artifacts,'creator':creator or ''},
         'total_collected_rows':rows
     }
+    # Preserve existing normalized contract when a state was explicitly
+    # reported. For servers omitting it, a detail query may be necessary.
+    if state is None:
+        normalized['state_missing']=True
+    return normalized
+
 
 
 def get_agent_flow_rows(agent):
@@ -406,6 +421,36 @@ def matching_flow(cid, flow_id):
     if len(matched)!=1:
         raise ValueError('Flow absent ou non attribuable à ce client EDR')
     return matched[0]
+
+
+def verified_flow_details(cid, flow_id):
+    """Optional read-only get_flow() fallback for records lacking `state`.
+
+    Some deployments omit the state field in flows(). Missing is never
+    treated as FINISHED; the fallback is also constrained to an exact client
+    and flow identifier, and failures remain unknown.
+    """
+    try:
+        responses=api_query(READ_FLOW_DETAILS, {'ClientId':cid,'FlowId':flow_id})
+    except RuntimeError:
+        return None
+    if len(responses)!=1 or not isinstance(responses[0],dict):
+        return None
+    details=responses[0].get('details')
+    if not isinstance(details,dict):
+        return None
+    # Never reuse status or results if returned identity is different.
+    try:
+        normalized=normalize_flow(details,cid)
+    except ValueError:
+        # A missing identifier does not authenticate a result. Conflicting
+        # identities must still be rejected, not silently ignored.
+        if any(k in details for k in ('FlowId','flow_id','SessionId','session_id','client_id','ClientId')):
+            raise
+        return None
+    if normalized['flow_id']!=flow_id:
+        raise PermissionError('get_flow() retourné pour un autre flow')
+    return normalized
 
 
 def flow_state(row):
@@ -443,8 +488,19 @@ def flow_status(agent, flow_id=None, *, include_result=True, persist=True):
     validate_flow_id(flow_id)
     row=matching_flow(cid,flow_id)
     state=flow_state(row)
+    source='flows()'
+    if state=='UNKNOWN' and row.get('state_missing'):
+        details=verified_flow_details(cid,flow_id)
+        if details is not None:
+            detail_state=flow_state(details)
+            if detail_state!='UNKNOWN':
+                state=detail_state
+                source='get_flow()'
+                # The verified details can contain an updated artifact list.
+                row=details
     outcome={'agent_id':agent,'client_id':cid,'flow_id':flow_id,'state':state,
              'artifacts':(row.get('request') or {}).get('artifacts',[]),
+             'state_source':source,
              'total_collected_rows':row.get('total_collected_rows'),
              'result_rows_sampled':None,'sample_sha256':None,
              'collection_finished':state=='FINISHED','results_present':False}
