@@ -133,3 +133,7 @@ Sur Kali, installer l'Active Response de preuve avec `sudo bash ops/wazuh/instal
 ## V3.5 - preuves réelles du parc Wazuh
 
 `aegismesh-soar fleet evidence status`, `fleet evidence install --apply --confirm` et `fleet evidence reconcile` relient les exécutions réelles des agents aux décisions Shuffle (voir `docs/PREUVES-AGENTS-V3.5.md`).
+
+### Diagnostic agent Windows 001 (V3.5.2)
+
+`aegismesh-soar fleet evidence diagnose --agent-id 001 --decision-id am-7cb8f4e2c76e13cda871c0fa` sur GCP vérifie le statut sans envoyer de commande. Sur le poste Windows, `ops/wazuh/windows/Diagnose-AegisMeshProof.ps1 -DecisionId ...` inspecte les journaux et le collecteur sans nouvelle action. Les exécuteurs Windows journalisent désormais les erreurs d'exécution sans inclure les données de la commande.

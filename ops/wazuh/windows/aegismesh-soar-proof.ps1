@@ -35,7 +35,10 @@ try {
     try {
         $base = Join-Path ${env:ProgramFiles(x86)} 'ossec-agent'
         $errlog = Join-Path $base 'active-response\aegismesh-soar-errors.log'
-        [System.IO.File]::AppendAllText($errlog, "AEGISMESH-SOAR-PROOF failed`n")
+        # Type only: never log the incoming JSON, source data, passwords or tokens.
+        $reason = $_.Exception.GetType().Name -replace '[^A-Za-z0-9_]', ''
+        $stamp = (Get-Date).ToUniversalTime().ToString('o')
+        [System.IO.File]::AppendAllText($errlog, "$stamp AEGISMESH-SOAR-PROOF failed type=$reason`n")
     } catch {}
     exit 1
 }

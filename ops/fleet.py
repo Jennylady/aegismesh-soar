@@ -97,6 +97,34 @@ def evidence_status():
     print('La présence du script sur l’agent ne prouve pas la collecte. Seules les alertes associées au bon agent sont acceptées.')
 
 
+def evidence_diagnose(agent, decision_id):
+    """Read-only Wazuh manager evidence trace, never sends a new AR."""
+    if not re.fullmatch(r'\d{3}', agent) or not bridge.RX_ID.fullmatch(decision_id):
+        raise ValueError('Identifiants agent/decision invalides')
+    with bridge.dbconn() as conn:
+        row = conn.execute('SELECT payload,action_status FROM decisions WHERE id=?', (decision_id,)).fetchone()
+    if row is None:
+        raise ValueError('Decision inconnue dans la base SOAR')
+    payload=json.loads(row['payload'])
+    target=str((payload.get('target') or {}).get('agent_id',''))
+    if target != agent:
+        raise ValueError('La decision appartient a un autre agent : refus de confusion des preuves')
+    print('Agent Wazuh:',agent,'Decision:',decision_id)
+    print('Action demandee:',payload.get('tag'),'Etat SOAR:',row['action_status'])
+    print('Regle de preuve installee:',Path('/var/ossec/etc/rules/aegismesh-soar-evidence.xml').is_file())
+    kind='block' if payload.get('tag') == 'WAZUH_BLOCK_AGENT' else 'proof'
+    found=bridge.wazuh_evidence(agent,decision_id,kind)
+    if found:
+        print('PREUVE RECUE ET ATTRIBUEE au bon agent depuis:',found)
+        print('Utiliser: aegismesh-soar fleet evidence reconcile')
+    else:
+        print('AUCUNE PREUVE CORRESPONDANTE dans les fichiers Wazuh du manager.')
+        print('Sur le poste Windows: Diagnose-AegisMeshProof.ps1 -DecisionId '+decision_id)
+        print('Si le journal local contient la preuve: rechercher la collecte sur le poste.')
+        print('Si le journal local est vide: examiner ossec.log et le lanceur Active Response.')
+    return 0
+
+
 def evidence_operation(args):
     if args.evidence_action=='install':
         sys.path.insert(0,str(ROOT/'ops/wazuh'))
@@ -105,6 +133,8 @@ def evidence_operation(args):
         return 0
     if args.evidence_action=='status':
         evidence_status();return 0
+    if args.evidence_action=='diagnose':
+        return evidence_diagnose(args.agent_id,args.decision_id)
     if args.evidence_action=='reconcile':
         print('Réconciliation (aucune action distante envoyée) :')
         print(json.dumps(bridge.reconcile_wazuh_decisions(), ensure_ascii=False,indent=2))
@@ -122,6 +152,9 @@ def main():
     ins=es.add_parser('install');ins.add_argument('--apply',action='store_true');ins.add_argument('--confirm',action='store_true')
     es.add_parser('status')
     es.add_parser('reconcile')
+    di=es.add_parser('diagnose',help='Diagnostic lecture seule d’une commande sur un agent')
+    di.add_argument('--agent-id', required=True)
+    di.add_argument('--decision-id', required=True)
     args=parser.parse_args()
     if args.action=='proof':return proof(args.agent_id)
     if args.action=='evidence' and args.evidence_action=='install':

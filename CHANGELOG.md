@@ -1,3 +1,10 @@
+## 3.5.2 — Diagnostic ciblé Windows 001 et observabilité Active Response
+
+- Nouveau `aegismesh-soar fleet evidence diagnose --agent-id 001 --decision-id <ID>` : lecture seule, refuse les incohérences agent/décision et ne déclenche aucune action distante.
+- Nouveau `ops/wazuh/windows/Diagnose-AegisMeshProof.ps1` : inventaire local, journaux d’exécution, état de la collecte et erreurs Wazuh, sans générer de fausse preuve.
+- Le lanceur Windows journalise son code de sortie non nul ; le script PowerShell journalise uniquement le type d’exception, jamais la charge utile ni les secrets.
+- Les règles Wazuh, le bridge de production, le pare-feu, les actions de remédiation et les scripts de confinement restent inchangés.
+
 ## 3.5.1 — tests isolés de l'inventaire SSH (aucun changement des actions en production)
 
 - Corrige le test `test_live_actions_v33.py` : l'inventaire des sessions SSH est simulé uniquement pendant les tests ; il ne dépend plus du système Kali ni d'un binaire `ss` présent sur l'hôte de test.
