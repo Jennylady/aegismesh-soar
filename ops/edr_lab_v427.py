@@ -109,6 +109,93 @@ def ensure_monitor(agent, *, confirm=False):
             'next': 'edr lab-quarantine start --agent-id 001 --confirm --console-access'}
 
 
+def _quarantine_spec():
+    """Read exact Quarantine-only spec; refuse complex/ambiguous event tables."""
+    rows = edr.api_query(edr.READ_MONITORING)
+    if len(rows) != 1:
+        raise RuntimeError('Table de monitoring absente ou ambiguë')
+    table = rows[0].get('monitoring')
+    if isinstance(table, str):
+        table = json.loads(table)
+    if not isinstance(table, dict):
+        raise RuntimeError('Monitoring invalide')
+    groups = [g for g in (table.get('label_events') or [])
+              if isinstance(g, dict) and str(g.get('label', '')).casefold() == 'quarantine']
+    if len(groups) != 1:
+        raise PermissionError('Groupe Quarantine absent ou ambigu')
+    data = groups[0].get('artifacts') or {}
+    if not isinstance(data, dict):
+        raise PermissionError('Groupe Quarantine inattendu')
+    matches = [spec for spec in data.get('specs', [])
+               if isinstance(spec, dict) and spec.get('artifact') == 'Windows.Remediation.QuarantineMonitor']
+    if len(matches) != 1:
+        raise PermissionError('Moniteur Quarantine absent ou dupliqué')
+    return matches[0]
+
+
+def _rule_table(spec):
+    """Velociraptor artifact parameter encoding: spec.parameters.env[]"""
+    params = spec.get('parameters') or {}
+    if not isinstance(params, dict):
+        raise RuntimeError('Paramètres du moniteur inconnus')
+    env = params.get('env') or []
+    if not isinstance(env, list):
+        raise RuntimeError('Format env du moniteur inconnu')
+    values = [str(row.get('value', '')) for row in env if isinstance(row, dict)
+              and row.get('key') == 'RuleLookupTable']
+    if len(values) > 1:
+        raise RuntimeError('Plusieurs paramètres RuleLookupTable : refus')
+    return values[0].replace('\r\n', '\n').strip() if values else None
+
+
+def transport_status(agent):
+    edr.require_root()
+    cid = _validate_target(agent)
+    current = _rule_table(_quarantine_spec())
+    return {'agent_id':agent, 'client_id':cid,
+            'wireguard_peer':f'{edr.WG_LAB_TRANSPORT_IP}:{edr.WG_LAB_TRANSPORT_PORT}/udp',
+            'wg_exception_configured':current == edr.WG_LAB_RULE_TABLE.strip(),
+            'current_rule_table_is_default':current is None,
+            'network_effect_verified':False,
+            'tls_frontend_check_verified':False,
+            'note':'Le maintien de WireGuard ne suffit pas à prouver la réponse TLS de /server.pem'}
+
+
+def transport_ensure(agent, *, confirm=False):
+    """Change only the Quarantine monitor parameters, never isolate a client.
+
+    Uses the documented add_client_monitoring(parameters=dict(...)) function.
+    Verify exact resulting configuration and refuse any complex existing table.
+    """
+    edr.require_root()
+    if not confirm:
+        raise PermissionError('--confirm requis pour modifier les paramètres du moniteur')
+    cid = _validate_target(agent)
+    with edr.lease_lock():
+        if edr.read_json(edr.LEASES, {}):
+            raise PermissionError('Baux EDR actifs : modification refusée')
+        if any('Quarantine' in (client.get('labels') or []) for client in edr.api_clients()):
+            raise PermissionError('Un client est en quarantaine : modification refusée')
+        if 'Quarantine' in edr.labels_for(cid):
+            raise PermissionError('Cible actuellement en quarantaine : modification refusée')
+        # A globally assigned QuarantineMonitor would affect other clients.
+        if _read_monitoring_assignments()['global']:
+            raise PermissionError('Moniteur global : modification refusée')
+        previous = _rule_table(_quarantine_spec())
+        if previous == edr.WG_LAB_RULE_TABLE.strip():
+            return {'status':'already_configured', **transport_status(agent)}
+        if previous is not None:
+            raise PermissionError('Paramètres existants personnalisés : pas de remplacement automatique')
+        result = edr.api_query(edr.ADD_QUARANTINE_WG_MONITOR)
+        if not result:
+            raise RuntimeError('API Velociraptor sans réponse : vérifier monitoring avant de recommencer')
+        new_spec = _quarantine_spec()
+        if _rule_table(new_spec) != edr.WG_LAB_RULE_TABLE.strip():
+            raise RuntimeError('Exception WireGuard NON confirmée côté serveur; ne pas lancer isolation')
+    return {'status':'configured_no_quarantine_started', **transport_status(agent),
+            'scope':'Quarantine monitoring label; seule la cible LAB 001 est autorisée à déclencher cette quarantaine'}
+
+
 def _validate_target(agent, *, require_monitor=True):
     if agent != LAB_AGENT:
         raise PermissionError('Mode laboratoire limité à WIN-LAB-01 (agent 001), jamais au contrôleur AD 006')
@@ -274,10 +361,12 @@ def main(argv=None):
     start_parser=s.add_parser('start');start_parser.add_argument('--agent-id',required=True)
     start_parser.add_argument('--confirm',action='store_true')
     start_parser.add_argument('--console-access',action='store_true')
-    for cmd in ('status', 'logs', 'results', 'monitor-status'):
+    for cmd in ('status', 'logs', 'results', 'monitor-status', 'transport-status'):
         sub=s.add_parser(cmd);sub.add_argument('--agent-id',required=True)
     monitor_parser=s.add_parser('monitor-ensure');monitor_parser.add_argument('--agent-id',required=True)
     monitor_parser.add_argument('--confirm',action='store_true')
+    transport_parser=s.add_parser('transport-ensure');transport_parser.add_argument('--agent-id',required=True)
+    transport_parser.add_argument('--confirm',action='store_true')
     release_parser=s.add_parser('release');release_parser.add_argument('--agent-id',required=True)
     release_parser.add_argument('--confirm',action='store_true')
     a=p.parse_args(argv)
@@ -286,6 +375,8 @@ def main(argv=None):
         elif a.action=='status': result=status(a.agent_id)
         elif a.action=='monitor-status': result=monitor_status(a.agent_id)
         elif a.action=='monitor-ensure': result=ensure_monitor(a.agent_id,confirm=a.confirm)
+        elif a.action=='transport-status': result=transport_status(a.agent_id)
+        elif a.action=='transport-ensure': result=transport_ensure(a.agent_id,confirm=a.confirm)
         elif a.action=='release': result=stop(a.agent_id,confirm=a.confirm)
         elif a.action=='results': result=monitor_results(a.agent_id)
         else: result=monitoring_logs(a.agent_id)

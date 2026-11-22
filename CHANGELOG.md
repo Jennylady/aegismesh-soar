@@ -1,3 +1,8 @@
+## 4.2.10 — Exception WireGuard contrôlée pour la quarantaine de laboratoire Windows
+- Ajoute `edr lab-quarantine transport-status` et `transport-ensure --confirm`, cibles strictement `001`. Une seule exception supplémentaire : UDP vers `136.116.89.163:51820`, transport sous-jacent WireGuard. Conservation des exceptions DNS/DHCP et du blocage IPsec générique.
+- La commande `transport-ensure` refuse les quarantaines en cours, les configurations personnalisées et tout moniteur global; compare l'affectation réellement relue après écriture. Pas de changement automatique du TLS, de certificat, du serveur, de la politique AD, ni du paramètre d'activation de l'isolement de production.
+- Un navigateur/curl échouant à la négociation TLS ne prouve pas, à lui seul, que le client EDR authentifié fonctionne mal. Les preuves de filtrage et de restauration restent à collecter en laboratoire.
+
 ## 4.2.9 — Résultats réels de la politique de quarantaine Velociraptor
 - `aegismesh-soar edr lab-quarantine results --agent-id 001` : interroge, en lecture seule, le flux **résultats** `monitoring()` de `Windows.Remediation.QuarantineMonitor`, distinct des messages `monitoring_logs()`. Les résultats peuvent expliquer pourquoi la politique IPsec ne reste pas présente (notamment un échec du test de retour vers le serveur EDR).
 - La fenêtre de lecture des résultats et des journaux est étendue à une heure pour conserver les preuves des essais précédents, uniquement pour `C.3c9cde1e0b930676`. VQL constant, aucune commande arbitraire ni mutation du client.
