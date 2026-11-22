@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory() as t:
           patch.object(edr,'identity_corresponds',return_value=True),
           patch.object(edr,'timer_active',return_value=True),
           patch.object(edr,'quarantine_monitoring_status',side_effect=fake_status),
-          patch.object(edr,'api_query',return_value=[{'monitoring':{'label_events':[{'label':'Quarantine','artifacts':{'specs':[{'artifact':'Windows.Remediation.QuarantineMonitor'}]}}]}}]),
+          patch.object(edr,'api_query',return_value=[{'monitoring':{'label_events':[{'label':'Quarantine','artifacts':{'specs':[{'artifact':'Windows.Remediation.QuarantineMonitor','parameters':{'env':[{'key':'RuleLookupTable','value':edr.WG_LAB_RULE_TABLE}]}}]}}]}}]),
           patch.object(edr,'labels_for',side_effect=lambda _cid: sorted(labels)),
           patch.object(edr,'modify_label',side_effect=fake_modify)):
         fails(lambda:lab.start('006',confirm=True,console_access=True),PermissionError)
@@ -99,7 +99,7 @@ with tempfile.TemporaryDirectory() as t:
         with patch.object(edr,'quarantine_monitoring_status',return_value={'artifact_referenced_by_server_monitoring':False}):
             fails(lambda:lab.start(ID,confirm=True,console_access=True),PermissionError)
         # Monitoring under an unrelated label must NOT pass as a valid guard.
-        with patch.object(edr,'api_query',return_value=[{'monitoring':{'label_events':[{'label':'Other','artifacts':{'specs':[{'artifact':'Windows.Remediation.QuarantineMonitor'}]}}]}}]):
+        with patch.object(edr,'api_query',return_value=[{'monitoring':{'label_events':[{'label':'Other','artifacts':{'specs':[{'artifact':'Windows.Remediation.QuarantineMonitor','parameters':{'env':[{'key':'RuleLookupTable','value':edr.WG_LAB_RULE_TABLE}]}}]}}]}}]):
             assert not lab.monitor_assigned_to_quarantine()
         assert lab.monitor_assigned_to_quarantine()
         # Read-only monitoring results are strictly attributed to the linked client.

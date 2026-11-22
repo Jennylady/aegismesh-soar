@@ -110,27 +110,91 @@ def ensure_monitor(agent, *, confirm=False):
 
 
 def _quarantine_spec():
-    """Read exact Quarantine-only spec; refuse complex/ambiguous event tables."""
+    """Read the exact label-scoped monitor, supporting both proto encodings.
+
+    Velociraptor's ArtifactCollectorArgs may expose artifact names in
+    `.artifacts` while its `.specs` list contains *only artifacts with custom
+    parameters*. A default artifact therefore legitimately has no spec.
+    Never call it missing solely because the spec list is empty. Refuse
+    duplicates, mismatched representations and unexpected structures.
+    """
     rows = edr.api_query(edr.READ_MONITORING)
     if len(rows) != 1:
         raise RuntimeError('Table de monitoring absente ou ambiguë')
     table = rows[0].get('monitoring')
     if isinstance(table, str):
-        table = json.loads(table)
+        try:
+            table = json.loads(table)
+        except ValueError:
+            raise RuntimeError('Table de monitoring non JSON') from None
     if not isinstance(table, dict):
         raise RuntimeError('Monitoring invalide')
-    groups = [g for g in (table.get('label_events') or [])
-              if isinstance(g, dict) and str(g.get('label', '')).casefold() == 'quarantine']
+    groups = [group for group in (table.get('label_events') or [])
+              if isinstance(group, dict) and str(group.get('label', '')).casefold() == 'quarantine']
     if len(groups) != 1:
         raise PermissionError('Groupe Quarantine absent ou ambigu')
-    data = groups[0].get('artifacts') or {}
+    data = groups[0].get('artifacts')
     if not isinstance(data, dict):
-        raise PermissionError('Groupe Quarantine inattendu')
-    matches = [spec for spec in data.get('specs', [])
-               if isinstance(spec, dict) and spec.get('artifact') == 'Windows.Remediation.QuarantineMonitor']
-    if len(matches) != 1:
-        raise PermissionError('Moniteur Quarantine absent ou dupliqué')
-    return matches[0]
+        raise PermissionError('Format des artefacts du groupe Quarantine inconnu')
+
+    names = data.get('artifacts') or []
+    specs = data.get('specs') or []
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        raise PermissionError('Liste de noms du monitoring invalide')
+    if not isinstance(specs, list) or not all(isinstance(spec, dict) for spec in specs):
+        raise PermissionError('Liste des spécifications du monitoring invalide')
+    monitor = 'Windows.Remediation.QuarantineMonitor'
+    name_count = names.count(monitor)
+    matched_specs = [spec for spec in specs if spec.get('artifact') == monitor]
+    if name_count > 1 or len(matched_specs) > 1:
+        raise PermissionError('Moniteur Quarantine dupliqué')
+    if not (name_count or matched_specs):
+        raise PermissionError('Moniteur Quarantine absent')
+    # ArtifactCollectorArgs.specs is not required for an artifact using its
+    # default parameters. Return an empty spec in that case; `_rule_table`
+    # interprets it as not yet configured, not as an absent monitor.
+    if matched_specs:
+        return matched_specs[0]
+    return {'artifact': monitor}
+
+
+def transport_inspect(agent):
+    """Read-only shape diagnostic; no raw VQL configuration or secrets exposed."""
+    edr.require_root()
+    cid = _validate_target(agent, require_monitor=False)
+    rows = edr.api_query(edr.READ_MONITORING)
+    if len(rows) != 1:
+        raise RuntimeError('Table de monitoring absente ou ambiguë')
+    table = rows[0].get('monitoring')
+    if isinstance(table, str):
+        try:
+            table = json.loads(table)
+        except ValueError:
+            raise RuntimeError('Réponse monitoring non JSON') from None
+    if not isinstance(table, dict):
+        raise RuntimeError('Format monitoring inconnu')
+    groups = table.get('label_events') or []
+    if not isinstance(groups, list):
+        raise RuntimeError('Format groupes monitoring invalide')
+    matches = [g for g in groups if isinstance(g, dict)
+               and str(g.get('label', '')).casefold() == 'quarantine']
+    info = []
+    for group in matches:
+        data = group.get('artifacts') or {}
+        names = data.get('artifacts') if isinstance(data, dict) else None
+        specs = data.get('specs') if isinstance(data, dict) else None
+        info.append({
+            'artifacts_names_type': type(names).__name__,
+            'artifact_names_count': len(names) if isinstance(names, list) else None,
+            'name_matches_count': names.count('Windows.Remediation.QuarantineMonitor') if isinstance(names, list) else None,
+            'specs_type': type(specs).__name__,
+            'specs_count': len(specs) if isinstance(specs, list) else None,
+            'spec_matches_count': sum(1 for sp in specs if isinstance(sp, dict) and sp.get('artifact') == 'Windows.Remediation.QuarantineMonitor') if isinstance(specs, list) else None,
+        })
+    return {'agent_id': agent, 'client_id': cid,
+            'quarantine_group_count': len(matches), 'groups': info,
+            'read_only': True, 'network_effect_verified': False,
+            'note': 'Ne montre ni paramètres ni données sensibles des autres artefacts'}
 
 
 def _rule_table(spec):
@@ -181,7 +245,13 @@ def transport_ensure(agent, *, confirm=False):
         # A globally assigned QuarantineMonitor would affect other clients.
         if _read_monitoring_assignments()['global']:
             raise PermissionError('Moniteur global : modification refusée')
-        previous = _rule_table(_quarantine_spec())
+        existing_spec = _quarantine_spec()
+        previous = _rule_table(existing_spec)
+        env = (existing_spec.get('parameters') or {}).get('env') or []
+        # Other custom parameters must not be discarded by a narrow transport
+        # update even when RuleLookupTable itself still has the default value.
+        if previous is None and env:
+            raise PermissionError('Autres paramètres personnalisés du moniteur : remplacement automatique refusé')
         if previous == edr.WG_LAB_RULE_TABLE.strip():
             return {'status':'already_configured', **transport_status(agent)}
         if previous is not None:
@@ -230,6 +300,10 @@ def start(agent, *, confirm=False, console_access=False):
     if not (confirm and console_access):
         raise PermissionError('--confirm et --console-access requis (console de secours indépendante du réseau)')
     cid = _validate_target(agent)
+    # A newly created quarantine label is not enough: avoid another ineffective
+    # quarantine if the exact WireGuard underlay exception is not installed.
+    if _rule_table(_quarantine_spec()) != edr.WG_LAB_RULE_TABLE.strip():
+        raise PermissionError('Exception WireGuard non confirmée : exécuter transport-status puis transport-ensure avant un nouveau test')
     # Do not turn on global production isolation or forge an incident/score.
     with edr.lease_lock():
         leases = edr.read_json(edr.LEASES, {})
@@ -361,7 +435,7 @@ def main(argv=None):
     start_parser=s.add_parser('start');start_parser.add_argument('--agent-id',required=True)
     start_parser.add_argument('--confirm',action='store_true')
     start_parser.add_argument('--console-access',action='store_true')
-    for cmd in ('status', 'logs', 'results', 'monitor-status', 'transport-status'):
+    for cmd in ('status', 'logs', 'results', 'monitor-status', 'transport-status', 'transport-inspect'):
         sub=s.add_parser(cmd);sub.add_argument('--agent-id',required=True)
     monitor_parser=s.add_parser('monitor-ensure');monitor_parser.add_argument('--agent-id',required=True)
     monitor_parser.add_argument('--confirm',action='store_true')
@@ -376,6 +450,7 @@ def main(argv=None):
         elif a.action=='monitor-status': result=monitor_status(a.agent_id)
         elif a.action=='monitor-ensure': result=ensure_monitor(a.agent_id,confirm=a.confirm)
         elif a.action=='transport-status': result=transport_status(a.agent_id)
+        elif a.action=='transport-inspect': result=transport_inspect(a.agent_id)
         elif a.action=='transport-ensure': result=transport_ensure(a.agent_id,confirm=a.confirm)
         elif a.action=='release': result=stop(a.agent_id,confirm=a.confirm)
         elif a.action=='results': result=monitor_results(a.agent_id)

@@ -1,3 +1,10 @@
+## 4.2.11 — Compatibilité des représentations du moniteur Quarantine et garde-fou laboratoire
+- Corrige la lecture de `get_client_monitoring` : un moniteur sans paramètres personnalisés peut figurer uniquement dans `artifacts.artifacts` sans entrée dans `artifacts.specs` ; cette situation n'est plus faussement classée absent.
+- Ajoute `transport-inspect` (lecture seule) qui expose uniquement les nombres de noms/specs du groupe Quarantine, jamais les secrets ni le contenu des paramètres. Refus strict des doublons, types inattendus et des affectations absentes.
+- `lab-quarantine start` exige désormais l'exception WireGuard exacte confirmée côté serveur avant de poser un nouveau label. Refuse le test sinon, sans créer de bail ni modifier le client.
+- Le correctif ne redémarre pas Velociraptor, ne change aucun secret/TLS, n'active pas l'isolation autonome, n'affecte pas le DC et ne supprime pas de quarantaine en cours.
+- Les commandes `transport-ensure` existantes restent conditionnées à l'absence de label/bail actif ; une écriture VQL ne vaut pas une preuve de maintien de la connexion EDR.
+
 ## 4.2.10 — Exception WireGuard contrôlée pour la quarantaine de laboratoire Windows
 - Ajoute `edr lab-quarantine transport-status` et `transport-ensure --confirm`, cibles strictement `001`. Une seule exception supplémentaire : UDP vers `136.116.89.163:51820`, transport sous-jacent WireGuard. Conservation des exceptions DNS/DHCP et du blocage IPsec générique.
 - La commande `transport-ensure` refuse les quarantaines en cours, les configurations personnalisées et tout moniteur global; compare l'affectation réellement relue après écriture. Pas de changement automatique du TLS, de certificat, du serveur, de la politique AD, ni du paramètre d'activation de l'isolement de production.
