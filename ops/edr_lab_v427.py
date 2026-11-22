@@ -17,44 +17,99 @@ LAB_TTL_SECONDS = 180
 
 
 
-def monitor_assigned_to_quarantine():
-    """Require a *specific* monitoring assignment, not a text substring.
+def _read_monitoring_assignments():
+    """Exact-match configured CLIENT_EVENT artifact assignments, no substring guesses.
 
-    Velociraptor stores label-scoped queries in `label_events` and general
-    queries in `artifacts`. A monitor in an unrelated label group is inert.
+    The API returns an Artifacts proto with `specs`; releases may also expose
+    its `artifacts` list. Never interpret an artifact under an unrelated label
+    as a Quarantine monitor.
     """
     rows = edr.api_query(edr.READ_MONITORING)
     if len(rows) != 1:
-        return False
+        raise RuntimeError('Etat client monitoring absent ou ambigu')
     config = rows[0].get('monitoring')
     if isinstance(config, str):
         try:
             config = json.loads(config)
         except ValueError:
-            return False
+            raise RuntimeError('Réponse monitoring non JSON') from None
     if not isinstance(config, dict):
-        return False
-
+        raise RuntimeError('Réponse monitoring invalide')
     name = 'Windows.Remediation.QuarantineMonitor'
+
     def assigned(group):
         if not isinstance(group, dict):
             return False
-        specs = group.get('specs', [])
-        return any(isinstance(spec, dict) and spec.get('artifact') == name
-                   for spec in specs if isinstance(spec, dict))
+        specs = group.get('specs') or []
+        if not isinstance(specs, list):
+            raise RuntimeError('Format specs du monitoring inconnu')
+        if any(isinstance(x, dict) and x.get('artifact') == name for x in specs):
+            return True
+        artifacts = group.get('artifacts') or []
+        if not isinstance(artifacts, list):
+            raise RuntimeError('Format artifacts du monitoring inconnu')
+        return name in artifacts
 
-    if assigned(config.get('artifacts')):
-        return True
-    labels = config.get('label_events', [])
-    return isinstance(labels, list) and any(
-        isinstance(item, dict) and
-        str(item.get('label', '')).casefold() == 'quarantine' and
-        assigned(item.get('artifacts'))
-        for item in labels
-    )
+    global_assigned = assigned(config.get('artifacts'))
+    label_events = config.get('label_events') or []
+    if not isinstance(label_events, list):
+        raise RuntimeError('Format label_events du monitoring inconnu')
+    labels = sorted({str(item.get('label', '')) for item in label_events
+                     if isinstance(item, dict) and assigned(item.get('artifacts'))})
+    return {'global': global_assigned, 'labels': labels,
+            'quarantine': global_assigned or any(x.casefold() == 'quarantine' for x in labels)}
 
 
-def _validate_target(agent):
+def monitor_assigned_to_quarantine():
+    return _read_monitoring_assignments()['quarantine']
+
+
+def monitor_status(agent):
+    edr.require_root()
+    cid = _validate_target(agent, require_monitor=False)
+    assignments = _read_monitoring_assignments()
+    return {'agent_id': agent, 'client_id': cid,
+            'monitor': 'Windows.Remediation.QuarantineMonitor',
+            'assignment': assignments,
+            'ready_for_lab_quarantine': assignments['quarantine'],
+            'label_present': 'Quarantine' in edr.labels_for(cid),
+            'network_effect_verified': False,
+            'note': 'Affectation du moniteur ne prouve pas l application IPsec'}
+
+
+def ensure_monitor(agent, *, confirm=False):
+    """Narrow, idempotent monitoring setup via Velociraptor's mTLS server API.
+
+    Only the `Quarantine` group is modified, and only if it is not already
+    properly monitored. No client is quarantined by this operation.
+    """
+    edr.require_root()
+    if not confirm:
+        raise PermissionError('--confirm requis pour modifier le monitoring EDR')
+    cid = _validate_target(agent, require_monitor=False)
+    before = _read_monitoring_assignments()
+    if before['quarantine']:
+        return {'status':'already_configured', 'changed':False, 'assignment':before,
+                'agent_id': agent,'client_id':cid, 'network_effect_verified':False}
+    if edr.read_json(edr.LEASES, {}):
+        raise PermissionError('Baux de quarantaine déjà actifs : configuration refusée')
+    clients = edr.api_clients()
+    if any('Quarantine' in (client.get('labels') or []) for client in clients):
+        raise PermissionError('Un client est déjà en quarantaine : pas de modification du monitoring pendant un isolement')
+    if 'Quarantine' in edr.labels_for(cid):
+        raise PermissionError('Quarantaine existante sur WIN-LAB-01')
+    # This call requires COLLECT_CLIENT. Never change API credentials or roles.
+    edr.api_query(edr.ADD_QUARANTINE_MONITOR)
+    after = _read_monitoring_assignments()
+    if not after['quarantine']:
+        raise RuntimeError('Modification API non confirmée dans le monitoring : aucune isolation demandée')
+    return {'status':'monitor_configured', 'changed':True,
+            'agent_id':agent, 'client_id':cid, 'assignment':after,
+            'label_present': False, 'network_effect_verified':False,
+            'next': 'edr lab-quarantine start --agent-id 001 --confirm --console-access'}
+
+
+def _validate_target(agent, *, require_monitor=True):
     if agent != LAB_AGENT:
         raise PermissionError('Mode laboratoire limité à WIN-LAB-01 (agent 001), jamais au contrôleur AD 006')
     if not edr.CONF.is_file():
@@ -74,11 +129,12 @@ def _validate_target(agent):
         raise PermissionError('Agent Wazuh Windows LAB non actif')
     if not edr.identity_corresponds(agent, client, wazuh):
         raise PermissionError('Mapping Wazuh / Velociraptor non attesté')
-    monitor = edr.quarantine_monitoring_status(agent)
-    if not monitor['artifact_referenced_by_server_monitoring']:
-        raise PermissionError('Windows.Remediation.QuarantineMonitor non présent dans le monitoring')
-    if not monitor_assigned_to_quarantine():
-        raise PermissionError('Le moniteur n est pas attribué au label Quarantine ni au groupe global')
+    if require_monitor:
+        monitor = edr.quarantine_monitoring_status(agent)
+        if not monitor['artifact_referenced_by_server_monitoring']:
+            raise PermissionError('Windows.Remediation.QuarantineMonitor absent du monitoring Velociraptor')
+        if not monitor_assigned_to_quarantine():
+            raise PermissionError('Moniteur non attribué au groupe Quarantine : lancer lab-quarantine monitor-ensure --agent-id 001 --confirm')
     return cid
 
 
@@ -171,14 +227,18 @@ def main(argv=None):
     start_parser=s.add_parser('start');start_parser.add_argument('--agent-id',required=True)
     start_parser.add_argument('--confirm',action='store_true')
     start_parser.add_argument('--console-access',action='store_true')
-    for cmd in ('status', 'logs'):
+    for cmd in ('status', 'logs', 'monitor-status'):
         sub=s.add_parser(cmd);sub.add_argument('--agent-id',required=True)
+    monitor_parser=s.add_parser('monitor-ensure');monitor_parser.add_argument('--agent-id',required=True)
+    monitor_parser.add_argument('--confirm',action='store_true')
     release_parser=s.add_parser('release');release_parser.add_argument('--agent-id',required=True)
     release_parser.add_argument('--confirm',action='store_true')
     a=p.parse_args(argv)
     try:
         if a.action=='start': result=start(a.agent_id,confirm=a.confirm,console_access=a.console_access)
         elif a.action=='status': result=status(a.agent_id)
+        elif a.action=='monitor-status': result=monitor_status(a.agent_id)
+        elif a.action=='monitor-ensure': result=ensure_monitor(a.agent_id,confirm=a.confirm)
         elif a.action=='release': result=stop(a.agent_id,confirm=a.confirm)
         else: result=monitoring_logs(a.agent_id)
         print(json.dumps(result,ensure_ascii=False,indent=2))

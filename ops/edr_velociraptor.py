@@ -39,6 +39,8 @@ COLLECT = "SELECT collect_client(client_id=ClientId, artifacts='Generic.Client.I
 COLLECT_WIN_TRIAGE = "SELECT collect_client(client_id=ClientId, artifacts=['Windows.System.Pslist', 'Windows.Network.Netstat'], env=dict()) AS collection FROM scope()"
 COLLECT_LINUX_TRIAGE = "SELECT collect_client(client_id=ClientId, artifacts=['Linux.Sys.Pslist', 'Linux.Network.Netstat'], env=dict()) AS collection FROM scope()"
 READ_MONITORING = 'SELECT get_client_monitoring() AS monitoring FROM scope() LIMIT 1'
+# Fixed admin VQL, not caller supplied. Scope: quarantine label group only.
+ADD_QUARANTINE_MONITOR = "SELECT add_client_monitoring(artifact='Windows.Remediation.QuarantineMonitor', label='Quarantine') AS result FROM scope()"
 READ_QUARANTINE_LOGS = "SELECT * FROM monitoring_logs(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 600) LIMIT 20"
 READ_FLOWS = 'SELECT * FROM flows(client_id=ClientId) LIMIT 50'
 READ_FLOW = 'SELECT * FROM flows(client_id=ClientId, flow_id=FlowId) LIMIT 2'
@@ -124,7 +126,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,READ_QUARANTINE_LOGS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,READ_QUARANTINE_LOGS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')

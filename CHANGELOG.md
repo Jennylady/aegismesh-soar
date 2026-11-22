@@ -1,3 +1,10 @@
+## 4.2.8 — Affectation automatique du moniteur Velociraptor (LAB 001)
+- Diagnostique précisément `Windows.Remediation.QuarantineMonitor` dans les groupes de surveillance Velociraptor (liste `specs` et liste `artifacts`). Ne confond plus simple présence dans la configuration avec affectation effective.
+- `aegismesh-soar edr lab-quarantine monitor-status --agent-id 001`: lecture seule, indique les groupes qui contiennent réellement le moniteur.
+- `aegismesh-soar edr lab-quarantine monitor-ensure --agent-id 001 --confirm`: ajoute le moniteur uniquement au groupe `Quarantine`, via l'API mTLS Velociraptor et `add_client_monitoring` ; requiert `COLLECT_CLIENT` et contrôle la configuration après écriture.
+- Refus si d'autres clients sont déjà en quarantaine ou si un bail SOAR existe ; ne pose pas le label `Quarantine`, ne redémarre aucun service, ne modifie pas le DC ni les autorisations API.
+- Le test d'isolation V4.2.7 reste séparé et protégé (`--console-access`, bail 180 s, retrait, identité 001). Aucune preuve d'isolation réseau n'est annoncée sans mesure sur Windows.
+
 ## 4.2.7 — Test scripté de la quarantaine réelle Windows LAB (sans interface Velociraptor)
 - Ajoute `edr lab-quarantine start/status/logs/release`, limité à l'agent 001 et au client EDR explicitement vérifié. CLI root seule, confirmation explicite et accès console de secours obligatoires.
 - Utilise l'API mTLS Velociraptor existante pour poser le vrai label `Quarantine` et le moniteur `Windows.Remediation.QuarantineMonitor`, avec bail de laboratoire de 180 secondes enregistré avant l'opération, et timer automatique de retrait déjà installé.
