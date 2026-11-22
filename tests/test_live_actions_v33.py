@@ -9,6 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent/'soar'))
 import bridge
 
 cfg=dict(bridge.ENV)
+# Production must read the real SSH session inventory and fail closed if it
+# cannot be queried. Unit tests must never depend on the Kali/GCP SSH state.
+# This mock is scoped to the test and is always removed in finally.
+ssh_sessions=mock.patch.object(
+    bridge,'current_ssh_management_peers',
+    return_value={ipaddress.ip_address('1.1.1.1')})
+ssh_sessions.start()
 try:
     target={'ip':'8.8.4.4','agent_id':'002'}
     data={'decision_id':'am-secure-case123','incident_id':'INC-459','tag':'WAZUH_BLOCK_AGENT',
@@ -29,11 +36,21 @@ try:
         payload=call.call_args.args[2]
         assert payload['command']=='!aegismesh-soar-block'
         assert payload['alert']['data']['srcip']=='8.8.4.4'
-    for unsafe_ip in ['10.77.77.34','192.168.96.1','136.116.89.163','198.51.100.42']:
+    for unsafe_ip in ['10.77.77.34','192.168.96.1','136.116.89.163','198.51.100.42','1.1.1.1']:
         try:
             bridge.wazuh_block_agent({**data,'target':{'agent_id':'002','ip':unsafe_ip}})
             raise AssertionError('Unsafe IP allowed '+unsafe_ip)
         except PermissionError: pass
+    # A missing SSH inventory must deny a real security action, not silently
+    # permit it. This is the important production fail-closed contract.
+    with mock.patch.object(bridge,'current_ssh_management_peers',
+                           side_effect=PermissionError('SSH inventory unavailable')):
+        try:
+            bridge.wazuh_block_agent(data)
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError('Live AR permitted with unavailable SSH inventory')
     try:
         bridge.wazuh_block_agent({**data,'target':{'agent_id':'001','ip':'8.8.4.4'}})
         raise AssertionError('Unlisted agent permitted')
@@ -64,6 +81,7 @@ try:
         except RuntimeError: pass
         assert not banned
 finally:
+    ssh_sessions.stop()
     bridge.ENV.clear();bridge.ENV.update(cfg)
 
 # Run native agent-side AR script against a fake nftables executor, never the host nft CLI.

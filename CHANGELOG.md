@@ -1,3 +1,9 @@
+## 3.5.1 — tests isolés de l'inventaire SSH (aucun changement des actions en production)
+
+- Corrige le test `test_live_actions_v33.py` : l'inventaire des sessions SSH est simulé uniquement pendant les tests ; il ne dépend plus du système Kali ni d'un binaire `ss` présent sur l'hôte de test.
+- Valide explicitement que la protection refuse une IP de session SSH (1.1.1.1 dans le test) et reste **fail-closed** si l'inventaire SSH échoue.
+- Aucun changement du bridge, de Wazuh, de Shuffle, de Fail2ban ou des règles réseau en production.
+
 ## 3.5.0 — preuve d’exécution agent → manager
 
 - Journal dédié et collecte explicite sur Kali/Windows/AD sans changement de comportement des services critiques.
