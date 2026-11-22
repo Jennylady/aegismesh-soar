@@ -343,6 +343,10 @@ def full_report():
                        ('blocks',block_inventory)]:
         try:output[label]=func()
         except Exception as exc:output[label]={'state':'unknown','error_type':type(exc).__name__}
+    try:
+        from ops.tenzir_conflict_v422 import check_status
+        output['pipeline_mode']=check_status()
+    except Exception as exc:output['pipeline_mode']={'state':'unknown','error_type':type(exc).__name__}
     output['worker_e2e']={'state':'not_tested','command':'aegismesh-soar audit worker --confirm'}
     output['documentation']='Vérifications live requises avant de déclarer confinement/EDR opérationnels'
     return output
@@ -354,6 +358,8 @@ def main(argv=None):
     sub.add_parser('status',help='Bilan lecture seule (ne déclenche aucun workflow ni pare-feu)')
     t=sub.add_parser('tenzir',help='Inspecter ou réparer uniquement tenzir-network')
     t.add_argument('--repair',action='store_true');t.add_argument('--confirm',action='store_true')
+    t.add_argument('--disable-pipelines',action='store_true',help='Suspendre uniquement les pipelines Tenzir dans Orborus via Compose, sauvegarde et rollback')
+    t.add_argument('--pipeline-status',action='store_true',help='Afficher la configuration des pipelines Orborus sans modifier de service')
     w=sub.add_parser('worker',help='Exécution réelle OBSERVE sans blocage; vérification callback')
     w.add_argument('--confirm',action='store_true');w.add_argument('--timeout',type=int,default=75)
     b=sub.add_parser('blocks',help='Preuves GCP/Linux/Windows (sondes à lecture seule facultatives)')
@@ -364,7 +370,16 @@ def main(argv=None):
     a=p.parse_args(argv)
     try:
         if a.action=='status':output=full_report()
-        elif a.action=='tenzir':output=repair_tenzir(confirm=a.confirm) if a.repair else tenzir_status()
+        elif a.action=='tenzir':
+            if sum((a.repair,a.disable_pipelines,a.pipeline_status))>1:
+                raise AuditError('Choisir une seule opération Tenzir')
+            if a.disable_pipelines:
+                from ops.tenzir_conflict_v422 import disable_pipelines
+                output=disable_pipelines(confirm=a.confirm)
+            elif a.pipeline_status:
+                from ops.tenzir_conflict_v422 import check_status
+                output=check_status()
+            else:output=repair_tenzir(confirm=a.confirm) if a.repair else tenzir_status()
         elif a.action=='worker':output=prove_worker(confirm=a.confirm,timeout=a.timeout)
         elif a.action=='blocks':output=block_inventory(probe=a.probe,confirm=a.confirm)
         elif a.action=='timers':output=ensure_timers(confirm=a.confirm) if a.ensure else timer_status()

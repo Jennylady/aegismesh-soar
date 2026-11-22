@@ -1,3 +1,11 @@
+## V4.2.2 — Conflit de ports Tenzir/Wazuh, mode pipeline optionnel
+
+- Confirme le conflit réel : Wazuh `wazuh-remoted` conserve `1514/TCP` ; Tenzir veut publier `1514/TCP` via toutes interfaces.
+- `aegismesh-soar audit tenzir --pipeline-status` : diagnostic en lecture seule (Orborus / Compose / propriétaire de port).
+- `aegismesh-soar audit tenzir --disable-pipelines --confirm` : suspend *uniquement* les pipelines Tenzir dans l'environnement du service Orborus par le Compose existant. Sauvegarde hors Git (`/var/lib/aegismesh-soar/compose-backups`, mode 0600), modification validée par `docker compose config --format json` et comparaison stricte de tous les services, redéploiement ciblé `--no-deps --no-build orborus`. Restauration automatique de la configuration si le contrôle Orborus échoue.
+- Cette option **ne répare pas Tenzir** : elle élimine ses tentatives de lancement dans la chaîne SOAR classique. Elle ne doit pas être utilisée si les pipelines de détection/Sigma Shuffle sont nécessaires.
+- Aucun réseau ou conteneur Tenzir supprimé, pas de changement du port Wazuh, aucune action de sécurité sur les agents.
+
 ## 4.2.1 — Référence réseau Tenzir obsolète sous Docker bridge
 
 - `audit tenzir` inspecte aussi `NetworkSettings.Networks` et identifie les rattachements à `tenzir-network` même si `HostConfig.NetworkMode=bridge`.

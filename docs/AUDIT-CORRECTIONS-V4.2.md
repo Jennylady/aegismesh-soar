@@ -110,3 +110,23 @@ sur la base de ces seuls journaux. Examiner d'abord sa stack de création.
 
 Le worker Shuffle `OBSERVE` a déjà été validé indépendamment de Tenzir : ne pas
 relancer le test simplement pour faire disparaître l'erreur Tenzir.
+
+## V4.2.2 — Conflit TCP 1514 de Tenzir avec Wazuh
+
+Preuve hôte: `wazuh-remoted` écoute sur `0.0.0.0:1514/TCP`. Le conteneur Tenzir, encore à l'état `Created` et lié à un réseau supprimé, publie `1514/TCP`, `1514/UDP`, `5160/TCP` sur une interface générique. La réparation par simple recréation du réseau serait donc incomplète voire perturbatrice.
+
+La chaîne de traitement Shuffle SOAR est déjà validée indépendamment des pipelines Tenzir (`OBSERVE`, callback exécuté, worker observé). **Si les pipelines Sigma/Tenzir ne sont pas utilisés**, leur suspension est une mesure prudente permettant de garder Wazuh sur 1514 et d'arrêter les tentatives de démarrage qui échouent :
+
+```bash
+# Lecture seule : vérifier le propriétaire Wazuh et la configuration réelle d'Orborus
+aegismesh-soar audit tenzir --pipeline-status
+# Activation explicite de la suspension; redémarre exclusivement Orborus :
+aegismesh-soar audit tenzir --disable-pipelines --confirm
+# Contrôles (et à nouveau OBSERVE après la modification) :
+aegismesh-soar audit tenzir --pipeline-status
+aegismesh-soar audit worker --confirm --timeout 90
+```
+
+Le script **refuse** les situations qu'il ne reconnaît pas : mauvais propriétaire de port, projet Compose différent, service arrêté, YAML inhabituel, variables de pipelines déjà renseignées, changement inattendu dans la sortie `docker compose config`, etc. Il sauvegarde le fichier Compose dans un répertoire privé en dehors du dépôt Git et restaure le fichier original si le redéploiement Orborus ou les contrôles après redémarrage échouent.
+
+Il ne répare **pas** le nœud Tenzir ; `tenzir-node` peut rester `Created`. Si les fonctions Sigma/pipelines doivent être conservées, la solution de fond est un déploiement Tenzir distinct et une connexion Shuffle via l'API Tenzir sur réseau interne (sans liaisons host 1514). Ce déploiement exige de contrôler la compatibilité des versions et les volumes persistants ; il n'est PAS inclus dans V4.2.2.
