@@ -109,7 +109,7 @@ def ensure_monitor(agent, *, confirm=False):
             'next': 'edr lab-quarantine start --agent-id 001 --confirm --console-access'}
 
 
-def _quarantine_spec():
+def _quarantine_spec(table_override=None):
     """Read the exact label-scoped monitor, supporting both proto encodings.
 
     Velociraptor's ArtifactCollectorArgs may expose artifact names in
@@ -118,10 +118,13 @@ def _quarantine_spec():
     Never call it missing solely because the spec list is empty. Refuse
     duplicates, mismatched representations and unexpected structures.
     """
-    rows = edr.api_query(edr.READ_MONITORING)
-    if len(rows) != 1:
-        raise RuntimeError('Table de monitoring absente ou ambiguë')
-    table = rows[0].get('monitoring')
+    if table_override is None:
+        rows = edr.api_query(edr.READ_MONITORING)
+        if len(rows) != 1:
+            raise RuntimeError('Table de monitoring absente ou ambiguë')
+        table = rows[0].get('monitoring')
+    else:
+        table = table_override
     if isinstance(table, str):
         try:
             table = json.loads(table)
@@ -266,6 +269,47 @@ def transport_status(agent):
             'note':'Le maintien de WireGuard ne suffit pas à prouver la réponse TLS de /server.pem'}
 
 
+def _transport_preview(index, append):
+    """Dry-run the EXACT VQL patch and validate its result before any write."""
+    rows = edr.api_query(edr.WG_MONITOR_PREVIEW_QUERIES[(index, append)])
+    if len(rows) != 1 or not isinstance(rows[0], dict):
+        raise RuntimeError('Prévisualisation VQL absente : écriture interdite')
+    proposed = rows[0].get('monitoring')
+    if proposed is None:
+        raise RuntimeError('Prévisualisation VQL NULL : écriture interdite (examiner permissions VQL et types JSON)')
+    spec = _quarantine_spec(proposed)
+    if _rule_table(spec) != edr.WG_LAB_RULE_TABLE.strip():
+        raise RuntimeError('Prévisualisation VQL sans exception WireGuard : écriture interdite')
+    return proposed
+
+
+def transport_diagnose(agent):
+    """Read-only check that a full monitoring patch is correctly representable."""
+    edr.require_root()
+    cid = _validate_target(agent)
+    status = transport_status(agent)
+    details = {'agent_id': agent, 'client_id': cid,
+               'wg_exception_configured': status['wg_exception_configured'],
+               'read_only': True, 'server_write_attempted': False,
+               'endpoint_network_isolation_verified': False}
+    if status['wg_exception_configured']:
+        details['diagnosis'] = 'already_configured'
+        return details
+    try:
+        index, append, _ = _monitoring_patch_target()
+        details['quarantine_group_index'] = index
+        details['existing_other_specs'] = append
+        proposed = _transport_preview(index, append)
+        details['patch_preview_valid'] = True
+        details['preview_artifact_custom_parameter_verified'] = (_rule_table(_quarantine_spec(proposed)) == edr.WG_LAB_RULE_TABLE.strip())
+        details['diagnosis'] = 'preview_valid; server write persistence must be evaluated separately'
+    except (RuntimeError, ValueError, PermissionError) as exc:
+        # Controlled errors only: never dump the monitoring table or VQL content.
+        details['patch_preview_valid'] = False
+        details['diagnosis'] = str(exc)
+    return details
+
+
 def transport_ensure(agent, *, confirm=False):
     """Change only the Quarantine monitor parameters, never isolate a client.
 
@@ -298,16 +342,19 @@ def transport_ensure(agent, *, confirm=False):
         if previous is not None:
             raise PermissionError('Paramètres existants personnalisés : pas de remplacement automatique')
         index, append, before_table = _monitoring_patch_target()
+        # V4.2.13: check what the server's OWN VQL patch function will
+        # produce. Prior mock tests incorrectly assumed patch always worked.
+        _transport_preview(index, append)
         query = edr.WG_MONITOR_PATCH_QUERIES[(index, append)]
-        # Atomic server-side JSON patch modifies only the exact Quarantine
-        # monitoring group's parameter specs, keeping other monitoring entries.
-        # It requires the existing COLLECT_CLIENT API role, not admin escalation.
         response = edr.api_query(query)
-        if not response:
-            raise RuntimeError('API set_client_monitoring sans réponse : ne pas isoler')
+        if len(response) != 1 or not isinstance(response[0], dict):
+            raise RuntimeError('API set_client_monitoring sans réponse structurée : ne pas isoler')
+        value = response[0].get('result')
+        if value is None or value is False:
+            raise RuntimeError('set_client_monitoring a renvoyé NULL/false (permission, erreur VQL ou sérialisation) : aucune isolation')
         new_spec = _quarantine_spec()
         if _rule_table(new_spec) != edr.WG_LAB_RULE_TABLE.strip():
-            raise RuntimeError('Exception WireGuard NON confirmée après set_client_monitoring; ne pas isoler')
+            raise RuntimeError('Patch valide en prévisualisation, mais valeur NON persistée par set_client_monitoring; examiner rôle API et journaux VQL')
         # Detect unexpected changes outside this dedicated group; do not
         # automatically restore a potentially concurrent user's configuration.
         after_rows = edr.api_query(edr.READ_MONITORING)
@@ -500,7 +547,7 @@ def main(argv=None):
     start_parser=s.add_parser('start');start_parser.add_argument('--agent-id',required=True)
     start_parser.add_argument('--confirm',action='store_true')
     start_parser.add_argument('--console-access',action='store_true')
-    for cmd in ('status', 'logs', 'results', 'monitor-status', 'transport-status', 'transport-inspect'):
+    for cmd in ('status', 'logs', 'results', 'monitor-status', 'transport-status', 'transport-inspect', 'transport-diagnose'):
         sub=s.add_parser(cmd);sub.add_argument('--agent-id',required=True)
     monitor_parser=s.add_parser('monitor-ensure');monitor_parser.add_argument('--agent-id',required=True)
     monitor_parser.add_argument('--confirm',action='store_true')
@@ -516,6 +563,7 @@ def main(argv=None):
         elif a.action=='monitor-ensure': result=ensure_monitor(a.agent_id,confirm=a.confirm)
         elif a.action=='transport-status': result=transport_status(a.agent_id)
         elif a.action=='transport-inspect': result=transport_inspect(a.agent_id)
+        elif a.action=='transport-diagnose': result=transport_diagnose(a.agent_id)
         elif a.action=='transport-ensure': result=transport_ensure(a.agent_id,confirm=a.confirm)
         elif a.action=='release': result=stop(a.agent_id,confirm=a.confirm)
         elif a.action=='results': result=monitor_results(a.agent_id)

@@ -1,3 +1,9 @@
+## 4.2.13 — Prévisualisation réelle du patch Velociraptor (fail-closed)
+- Ajoute `transport-diagnose` en lecture seule : exécute côté serveur le `patch(get_client_monitoring())` de production, vérifie le moniteur exact et renvoie un verdict sans exposer RuleLookupTable ni aucune donnée d’agent.
+- `transport-ensure` vérifie désormais la transformation VQL en lecture seule avant toute écriture. L’absence de paramètres dès l’étape de prévisualisation provoque un refus explicite, au lieu de répéter des appels `set_client_monitoring()` qui ne peuvent pas aboutir.
+- Sépare les échecs : prévisualisation non transformée, résultat API NULL/false, valeur non persistée après écriture. Conserve le refus des isolations tant que WireGuard n’est pas confirmé.
+- Tests locaux avec fausse API qui simule séparément le patch prévisualisé, l’écriture et la relecture ; aucun endpoint ou contrôleur AD touché. L’identification de la cause sur le serveur GCP requiert le retour de `transport-diagnose`.
+
 ## 4.2.12 — Mise à jour ciblée des paramètres d’un moniteur existant
 - Corrige `transport-ensure` : `add_client_monitoring()` ajoutait un artefact déjà affecté, sans modifier son `RuleLookupTable`. Utilise désormais `get_client_monitoring()` + `patch()` + `set_client_monitoring()` pour ajouter uniquement les paramètres à `Windows.Remediation.QuarantineMonitor` dans le groupe `Quarantine`.
 - Préserve les autres labels, leurs artefacts et les paramètres globaux. Refuse tout doublon, groupe ambigu, paramètres personnalisés existants, autre hôte en quarantaine, bail actif ou API non concluante. Vérifie le `RuleLookupTable` réellement relu après écriture ; n’active pas l’isolement en cas d’échec.

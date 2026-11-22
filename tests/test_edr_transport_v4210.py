@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline V4.2.10 safety tests (no real endpoint or Velociraptor change)."""
 from pathlib import Path
+import copy
 from unittest.mock import patch
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -31,6 +32,10 @@ state={'monitoring':{
 def api(query):
   if query == edr.READ_MONITORING:
     return [state.copy()]
+  if query == edr.WG_MONITOR_PREVIEW_QUERIES[(0,False)]:
+    preview = copy.deepcopy(state['monitoring'])
+    preview['label_events'][0]['artifacts']['specs'] = [spec]
+    return [{'monitoring': preview}]
   if query == edr.WG_MONITOR_PATCH_QUERIES[(0,False)]:
     state['monitoring']['label_events'][0]['artifacts']['specs']=[spec]
     return [{'result':True}]

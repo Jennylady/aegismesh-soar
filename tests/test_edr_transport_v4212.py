@@ -44,12 +44,15 @@ class FakeVelociraptor:
         self.calls.append(query)
         if query == edr.READ_MONITORING:
             return [{'monitoring':copy.deepcopy(self.table)}]
-        assert query in edr.WG_MONITOR_PATCH_QUERIES.values(), 'unexpected VQL'
-        index, append = next(k for k,v in edr.WG_MONITOR_PATCH_QUERIES.items() if v == query)
-        specs = self.table['label_events'][index]['artifacts'].setdefault('specs', [])
+        is_preview = query in edr.WG_MONITOR_PREVIEW_QUERIES.values()
+        pool = edr.WG_MONITOR_PREVIEW_QUERIES if is_preview else edr.WG_MONITOR_PATCH_QUERIES
+        assert query in pool.values(), 'unexpected VQL'
+        index, append = next(k for k,v in pool.items() if v == query)
+        table = copy.deepcopy(self.table) if is_preview else self.table
+        specs = table['label_events'][index]['artifacts'].setdefault('specs', [])
         assert append == bool(specs)
         specs.append({'artifact': NAME, 'parameters': {'env': [{'key':'RuleLookupTable','value': edr.WG_LAB_RULE_TABLE}]}})
-        return [{'result': True}]
+        return [{'monitoring': table}] if is_preview else [{'result': True}]
 
 for index in (0,1):
     for original_specs in (None, [{'artifact': 'Other.Event', 'parameters': {'env': [{'key':'Severity','value':'high'}]}}]):
@@ -75,6 +78,7 @@ for index in (0,1):
             assert api.table['label_events'][index]['artifacts']['artifacts'] == [NAME]
             assert len([s for s in api.table['label_events'][index]['artifacts']['specs'] if s.get('artifact') == NAME]) == 1
             assert api.calls.count(edr.WG_MONITOR_PATCH_QUERIES[(index, bool(original_specs))]) == 1
+            assert api.calls.count(edr.WG_MONITOR_PREVIEW_QUERIES[(index, bool(original_specs))]) == 1
 
 # No arbitrary VQL: only fixed, bounded group indexes and fixed allowlisted values.
 for bad_index in (-1,16,99, '1'):
@@ -87,6 +91,7 @@ for index in (0,1,15):
         assert query.startswith('SELECT set_client_monitoring(value=patch(item=get_client_monitoring()')
         assert f'/label_events/{index}/artifacts/specs' in query
         assert '136.116.89.163' in query and '51820,udp' in query
+        assert 'SELECT patch(item=get_client_monitoring()' in edr.WG_MONITOR_PREVIEW_QUERIES[(index,append)]
         assert 'Block,any,,,any,,,,yes,All other traffic' in query
 
 # Refuse unexpected existing custom parameters before mutation.

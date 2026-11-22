@@ -84,6 +84,22 @@ WG_MONITOR_PATCH_QUERIES = {
     for idx in range(16) for append in (False, True)
 }
 
+# Read-only equivalent of the exact write patch. Velociraptor VQL returns
+# NULL on many failures while the CLI itself exits 0. Check the transformed
+# table BEFORE calling set_client_monitoring() in production.
+def _wg_monitor_preview_vql(index, *, append=False):
+    write = _wg_monitor_patch_vql(index, append=append)
+    prefix = 'SELECT set_client_monitoring(value='
+    suffix = ') AS result FROM scope()'
+    assert write.startswith(prefix) and write.endswith(suffix)
+    expr = write[len(prefix):-len(suffix)]
+    return 'SELECT ' + expr + ' AS monitoring FROM scope() LIMIT 1'
+
+WG_MONITOR_PREVIEW_QUERIES = {
+    (idx, append): _wg_monitor_preview_vql(idx, append=append)
+    for idx in range(16) for append in (False, True)
+}
+
 READ_QUARANTINE_LOGS = "SELECT * FROM monitoring_logs(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 3600) LIMIT 80"
 # Distinct from monitoring_logs: these rows contain netsh results and frontend check outcome.
 READ_QUARANTINE_RESULTS = "SELECT * FROM monitoring(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 3600) LIMIT 100"
@@ -171,7 +187,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1', *WG_MONITOR_PATCH_QUERIES.values()):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1', *WG_MONITOR_PATCH_QUERIES.values(), *WG_MONITOR_PREVIEW_QUERIES.values()):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')
