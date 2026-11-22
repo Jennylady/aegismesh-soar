@@ -1,3 +1,7 @@
+### Nouveau : remédiation AD/LDAP V3.8.0
+
+L'action `AD_DISABLE_ACCOUNT` est implémentée, mais **désactivée par défaut**. Elle réutilise les vrais rappels Shuffle / Wazuh agent `006`, exécute `Disable-ADAccount` uniquement sur un utilisateur SID du domaine inscrit dans le groupe d'éligibilité et vérifie `Enabled=False` avant de publier une preuve. Pour la procédure Windows DC / GCP et les limites de sécurité, voir `docs/AD-LDAP-REMEDIATION-V3.8.md`. Aucun score ni preuve d'incident n'est généré par le dépôt SOAR.
+
 ### Correctif 3.7.4 — schéma des collectes
 
 `edr flows`, `edr flow-status` et `edr investigations` reconnaissent `session_id` tel que retourné par le serveur Velociraptor. Si `state` est absent, l'outil consulte `get_flow()` sans jamais attribuer un état final par déduction. Voir `docs/EDR-FLOWS-V3.7.4.md`.

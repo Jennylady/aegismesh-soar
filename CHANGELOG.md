@@ -1,3 +1,18 @@
+## 3.8.1 — Correction fermeture SQLite pour les tests AD sous Windows
+
+- Les connexions `bridge.dbconn()` sont maintenant refermées explicitement à la fin de chaque transaction, y compris en cas d'exception ; `with sqlite3.Connection` ne les fermait pas.
+- Corrige `WinError 32` sur `db.sqlite3` pendant le nettoyage de `TemporaryDirectory` dans `test_ad_response_v38.py` avec Python 3.14/Windows.
+- Le test AD restaure aussi le chemin initial `bridge.DB`, sans laisser un chemin temporaire après exécution.
+- Nouveau test de non-régression pour commit, rollback et fermeture systématique de la connexion, inclus dans les contrôles `aegismesh-soar update`. Aucune modification des politiques AD, de Wazuh, Shuffle, des agents ou de l'authentification.
+
+## 3.8.0 — Intégration réelle de la remédiation AD/LDAP via Shuffle et Wazuh
+
+- Nouveau `AD_DISABLE_ACCOUNT`: décision authentifiée → Shuffle existant → Wazuh API sur DC `006` → PowerShell ActiveDirectory, sans connexion LDAP administrative depuis GCP.
+- Contrôles indépendants d'identité SID/domaine, groupe AD opt-in, groupes protégés, rôles et comptes de service; action désactivée par défaut et activée une seule fois.
+- Exécuteur Windows DC installable, audit préalable/postérieur, relecture `Get-ADUser`, réactivation manuelle encadrée.
+- Règles de preuve `119874` (succès), `119875` (échec) et `119876` (précontrôle DC), attribution stricte agent + décision + SID. Échec tardif = état à confirmer, jamais succès inventé.
+- Commandes `aegismesh-soar ad status|probe|enable|disable` et tests non destructifs ; pas de réinstallation Wazuh/Shuffle/Velociraptor.
+
 ## 3.7.4 — Compatibilité du schéma `session_id` de Velociraptor
 
 - Le flow VQL possède `session_id`, et pas seulement `FlowId` ou `flow_id`; valeurs contradictoires refusées.

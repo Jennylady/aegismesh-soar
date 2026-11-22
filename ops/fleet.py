@@ -88,7 +88,7 @@ def evidence_status():
         print('Manager:',source,'present='+str(path.is_file()),
               'taille_octets='+str(path.stat().st_size if path.is_file() else 0))
     with bridge.dbconn() as conn:
-        rows=conn.execute("SELECT id,payload,action_status FROM decisions WHERE tag IN ('WAZUH_AR_PROOF','WAZUH_BLOCK_AGENT','WINDOWS_BLOCK_IP') ORDER BY updated_at DESC LIMIT 12").fetchall()
+        rows=conn.execute("SELECT id,payload,action_status FROM decisions WHERE tag IN ('WAZUH_AR_PROOF','WAZUH_BLOCK_AGENT','WINDOWS_BLOCK_IP','AD_DISABLE_ACCOUNT') ORDER BY updated_at DESC LIMIT 12").fetchall()
     print('Décisions Wazuh (dernières 12) :')
     for row in rows:
         try:
@@ -113,8 +113,11 @@ def evidence_diagnose(agent, decision_id):
     print('Agent Wazuh:',agent,'Decision:',decision_id)
     print('Action demandee:',payload.get('tag'),'Etat SOAR:',row['action_status'])
     print('Regle de preuve installee:',Path('/var/ossec/etc/rules/aegismesh-soar-evidence.xml').is_file())
-    kind='winblock' if payload.get('tag') == 'WINDOWS_BLOCK_IP' else ('block' if payload.get('tag') == 'WAZUH_BLOCK_AGENT' else 'proof')
-    found=bridge.wazuh_evidence(agent,decision_id,kind)
+    kind=('winblock' if payload.get('tag') == 'WINDOWS_BLOCK_IP' else
+          'adaccount' if payload.get('tag') == 'AD_DISABLE_ACCOUNT' else
+          'block' if payload.get('tag') == 'WAZUH_BLOCK_AGENT' else 'proof')
+    found=bridge.wazuh_evidence(agent,decision_id,kind,
+                                user_sid=(payload.get('target') or {}).get('user_sid'))
     if found:
         print('PREUVE RECUE ET ATTRIBUEE au bon agent depuis:',found)
         print('Utiliser: aegismesh-soar fleet evidence reconcile')

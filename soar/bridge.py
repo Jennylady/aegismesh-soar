@@ -5,6 +5,7 @@ Does not touch existing relay, Wazuh config, Fail2ban config or Nginx.
 Production actions disabled by default. Keep binding on loopback until network is restricted.
 """
 import base64
+from contextlib import contextmanager
 import datetime as dt
 import hmac
 import ipaddress
@@ -32,10 +33,11 @@ TAGS = {
     'WINDOWS_BLOCK_IP': 'windows_firewall_block',
     'EDR_COLLECT': 'edr_collection',
     'EDR_ISOLATE': 'edr_quarantine',
-    'AD_DISABLE_ACCOUNT': 'not_implemented',
+    'AD_DISABLE_ACCOUNT': 'ad_account_disable',
 }
 RX_ID = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
 RX_AGENT = re.compile(r'^\d{3}$')
+RX_AD_SID = re.compile(r'^S-1-5-21-(?:[0-9]{1,10}-){3}[0-9]{1,10}$')
 ENV = {}
 DB = None
 LOCK = threading.Lock()
@@ -56,11 +58,24 @@ def log(event, **fields):
     print(json.dumps(entry, ensure_ascii=False), flush=True)
 
 
+@contextmanager
 def dbconn():
-    c = sqlite3.connect(DB, timeout=10)
-    c.row_factory = sqlite3.Row
-    c.execute('PRAGMA busy_timeout=10000')
-    return c
+    """Transactional SQLite connection that is *always closed* on exit.
+
+    sqlite3.Connection.__exit__ only commits or rolls back; it does not
+    close the handle.  On Windows that leaves db.sqlite3 locked and prevents
+    TemporaryDirectory cleanup (WinError 32).  All existing callers already
+    use ``with dbconn() as conn``; retain the transaction behavior while
+    closing the underlying handle even when an exception occurs.
+    """
+    conn = sqlite3.connect(DB, timeout=10)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA busy_timeout=10000')
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -126,7 +141,29 @@ def policy(data):
     if len(data.get('evidence_ids', [])) < 2 or data.get('confidence', 0) < 0.90:
         raise PermissionError('preuves / confiance insuffisantes')
     if tag == 'AD_DISABLE_ACCOUNT':
-        raise PermissionError('tag AD/LDAP désactivé : action non intégrée')
+        # A decision from the analytic engine is NOT an unrestricted AD command.
+        # Only a real domain user SID, fixed DC allowlist and verified incident are accepted.
+        if not (enabled('ENABLE_PROD_ACTIONS') and enabled('ENABLE_AD_REMEDIATION')):
+            raise PermissionError('remédiation AD désactivée, activer séparément après installation DC')
+        if data.get('confidence', 0) < 0.98 or len(set(data.get('evidence_ids', []))) < 2:
+            raise PermissionError('AD : score >=0.98 et deux preuves distinctes obligatoires')
+        if not re.fullmatch(r'am-[0-9a-f]{24}', data['decision_id']):
+            raise PermissionError('AD : identifiant de décision compatible Windows obligatoire')
+        if not re.fullmatch(r'[A-Za-z0-9_.:-]{4,120}', data.get('incident_id','')):
+            raise PermissionError('AD : identifiant d incident incompatible avec exécuteur Windows')
+        target = data.get('target') or {}
+        if (not isinstance(target, dict) or
+                target.get('agent_id') != setting('AD_DC_AGENT_ID') or
+                target.get('agent_id') not in setting('WAZUH_WINDOWS_DC_AGENT_IDS').split(',')):
+            raise PermissionError('AD : agent cible différent du contrôleur autorisé')
+        if (not isinstance(target.get('user_sid'), str) or
+                not RX_AD_SID.fullmatch(target['user_sid'])):
+            raise PermissionError('AD : SID utilisateur Windows requis, nom de compte libre interdit')
+        if (target.get('domain_dns') != setting('AD_DOMAIN_DNS') or
+                not setting('AD_DOMAIN_DNS')):
+            raise PermissionError('AD : domaine attendu non configuré ou différent')
+        if set(target) != {'agent_id','user_sid','domain_dns'}:
+            raise PermissionError('AD : champs target supplémentaires interdits')
     if tag == 'EDR_ISOLATE':
         if not enabled('ENABLE_EDR_ISOLATION') or not enabled('ENABLE_PROD_ACTIONS'):
             raise PermissionError('EDR isolation désactivée')
@@ -377,7 +414,8 @@ def local_wazuh_proof(proof_id, *, path='/var/ossec/logs/aegismesh-soar-proof.js
 
 
 
-EVIDENCE_MARKER = re.compile(r'AEGISMESH-SOAR-(PROOF|BLOCK|WINBLOCK|WINUNBLOCK) decision_id=([A-Za-z0-9_-]{8,64}) status=(executed|blocked|removed)')
+EVIDENCE_MARKER = re.compile(r'AEGISMESH-SOAR-(PROOF|BLOCK|WINBLOCK|WINUNBLOCK|ADACCOUNT|ADFAIL|ADREADY) decision_id=([A-Za-z0-9_-]{8,64}) status=(executed|blocked|removed|disabled|failed|ready)')
+AD_SID_MARKER = re.compile(r'\bsid=(S-1-5-21-(?:[0-9]{1,10}-){3}[0-9]{1,10})(?=\s|$)')
 EVIDENCE_LOGS = ('/var/ossec/logs/alerts/alerts.json', '/var/ossec/logs/archives/archives.json')
 
 
@@ -388,9 +426,22 @@ def collected_wazuh_evidence(pending, *, sources=None, tail_bytes=24_000_000):
     alerts.json (through our dedicated rule) or archives.json. Files on agents
     alone never imply manager-side verification.
     """
-    wanted = {(str(agent).zfill(3), decision_id, kind) for agent, decision_id, kind in pending
-              if RX_AGENT.fullmatch(str(agent).zfill(3)) and RX_ID.fullmatch(str(decision_id))
-              and kind in ('proof', 'block', 'winblock', 'winunblock')}
+    # Entries are (agent, decision_id, kind[, expected_user_sid]).
+    # When checking AD evidence, SID matching is compulsory to prevent a
+    # different account's log line from proving an unrelated remediation.
+    wanted = {}
+    for item in pending:
+        if len(item) not in (3, 4):
+            continue
+        agent, decision_id, kind = item[:3]
+        sid = item[3] if len(item) == 4 else None
+        agent = str(agent).zfill(3)
+        if (not RX_AGENT.fullmatch(agent) or not RX_ID.fullmatch(str(decision_id)) or
+                kind not in ('proof','block','winblock','winunblock','adaccount','adfail','adready')):
+            continue
+        if kind in ('adaccount','adfail') and (not isinstance(sid, str) or not RX_AD_SID.fullmatch(sid)):
+            continue
+        wanted[(agent, decision_id, kind)] = sid
     found = {}
     if not wanted:
         return found
@@ -414,10 +465,15 @@ def collected_wazuh_evidence(pending, *, sources=None, tail_bytes=24_000_000):
                     if not isinstance(message, str):
                         continue
                     for match in EVIDENCE_MARKER.finditer(message):
-                        kind = {'PROOF':'proof', 'BLOCK':'block', 'WINBLOCK':'winblock', 'WINUNBLOCK':'winunblock'}[match.group(1)]
-                        expected_status = 'executed' if kind == 'proof' else ('removed' if kind == 'winunblock' else 'blocked')
+                        kind = {'PROOF':'proof', 'BLOCK':'block', 'WINBLOCK':'winblock', 'WINUNBLOCK':'winunblock','ADACCOUNT':'adaccount','ADFAIL':'adfail','ADREADY':'adready'}[match.group(1)]
+                        expected_status = ('executed' if kind == 'proof' else 'removed' if kind == 'winunblock'
+                                           else 'disabled' if kind == 'adaccount' else 'failed' if kind == 'adfail' else 'ready' if kind == 'adready' else 'blocked')
                         key = (agent, match.group(2), kind)
                         if match.group(3) == expected_status and key in wanted:
+                            if kind in ('adaccount','adfail'):
+                                sid_match = AD_SID_MARKER.search(message[match.end():])
+                                if not sid_match or sid_match.group(1) != wanted[key]:
+                                    continue
                             found[key] = path
                     if len(found) == len(wanted):
                         return found
@@ -426,8 +482,9 @@ def collected_wazuh_evidence(pending, *, sources=None, tail_bytes=24_000_000):
     return found
 
 
-def wazuh_evidence(agent, decision_id, kind='proof', *, sources=None):
-    return collected_wazuh_evidence([(agent, decision_id, kind)], sources=sources).get(
+def wazuh_evidence(agent, decision_id, kind='proof', *, sources=None, user_sid=None):
+    item = (agent, decision_id, kind, user_sid) if kind in ('adaccount','adfail') else (agent, decision_id, kind)
+    return collected_wazuh_evidence([item], sources=sources).get(
         (str(agent).zfill(3), decision_id, kind), '')
 
 
@@ -440,18 +497,24 @@ def reconcile_wazuh_decisions():
         try:
             data = json.loads(row['payload'])
             tag = data.get('tag')
-            if tag not in ('WAZUH_AR_PROOF', 'WAZUH_BLOCK_AGENT', 'WINDOWS_BLOCK_IP'):
+            if tag not in ('WAZUH_AR_PROOF', 'WAZUH_BLOCK_AGENT', 'WINDOWS_BLOCK_IP', 'AD_DISABLE_ACCOUNT'):
                 continue
             agent = str(data.get('target', {}).get('agent_id', ''))
-            kind = 'proof' if tag == 'WAZUH_AR_PROOF' else ('winblock' if tag == 'WINDOWS_BLOCK_IP' else 'block')
-            pending.append((agent, row['id'], kind, row))
+            kind = ('proof' if tag == 'WAZUH_AR_PROOF' else 'winblock' if tag == 'WINDOWS_BLOCK_IP'
+                    else 'adaccount' if tag == 'AD_DISABLE_ACCOUNT' else 'block')
+            sid = data.get('target', {}).get('user_sid') if kind == 'adaccount' else None
+            pending.append((agent, row['id'], kind, sid, row))
         except (ValueError, TypeError, KeyError):
             continue
-    found = collected_wazuh_evidence([(a, d, k) for a,d,k,_ in pending])
+    requests = [(a,d,k,sid) if k == 'adaccount' else (a,d,k)
+                for a,d,k,sid,_ in pending]
+    requests += [(a,d,'adfail',sid) for a,d,k,sid,_ in pending if k == 'adaccount']
+    found = collected_wazuh_evidence(requests)
     matched = 0
-    for agent, decision_id, kind, row in pending:
+    for agent, decision_id, kind, sid, row in pending:
         location = found.get((agent, decision_id, kind))
-        if not location:
+        failed = found.get((agent, decision_id, 'adfail')) if kind == 'adaccount' else None
+        if not location and not failed:
             continue
         try:
             details = json.loads(row['detail'] or '{}')
@@ -459,14 +522,21 @@ def reconcile_wazuh_decisions():
                 details = {}
         except (TypeError, ValueError):
             details = {}
-        details.update({'agent_execution_verified': True, 'execution_verified_on_agent': True,
-                        'evidence_via_wazuh': 'agent_logcollector', 'evidence_source': location})
+        state = 'needs_manual_review' if location and failed else 'failed' if failed else 'executed'
+        details.update({'agent_execution_verified': bool(location),
+                        'account_disabled_verified': bool(location) and not bool(failed) if kind=='adaccount' else details.get('account_disabled_verified'),
+                        'execution_verified_on_agent': bool(location),
+                        'evidence_via_wazuh': 'agent_logcollector',
+                        'evidence_source': location or failed,
+                        'endpoint_failure_reported': bool(failed),
+                        'effect_uncertain': bool(failed)})
         with dbconn() as conn:
-            result = conn.execute("UPDATE decisions SET action_status='executed',status='action_executed',detail=?,updated_at=? WHERE id=? AND action_status='dispatched_unverified'",
-                                  (json.dumps(details), utcnow(), decision_id))
+            result = conn.execute("UPDATE decisions SET action_status=?,status='action_executed',detail=?,updated_at=? WHERE id=? AND action_status='dispatched_unverified'",
+                                  (state, json.dumps(details), utcnow(), decision_id))
             if result.rowcount:
                 matched += 1
-                log('wazuh_agent_evidence_verified', decision_id=decision_id, agent_id=agent)
+                log('wazuh_agent_evidence_verified' if state=='executed' else 'wazuh_agent_action_not_verified',
+                    decision_id=decision_id, agent_id=agent, action_status=state)
     return {'pending': len(pending), 'verified_now': matched, 'still_unverified': len(pending)-matched}
 
 
@@ -596,6 +666,53 @@ def wazuh_block_windows(data):
             'domain_controller_policy': agent in domain_controllers}
 
 
+
+def wazuh_disable_ad_account(data):
+    """Dispatch fixed AD executor to explicitly provisioned DC only.
+
+    The endpoint resolves SID and independently checks group membership,
+    privilege exclusions, the domain, and AD readback before emitting evidence.
+    API dispatch is NOT success proof.
+    """
+    target = data['target']
+    agent = target['agent_id']
+    sid = target['user_sid']
+    if enabled('WAZUH_TLS_INSECURE'):
+        raise PermissionError('AD : Wazuh API TLS non vérifié interdit')
+    token = wazuh_auth_token()
+    record = wazuh_agent_record(agent, token)
+    oslabel = str((record.get('os') or {}).get('name', '')).lower()
+    if 'windows' not in oslabel:
+        raise PermissionError('AD : le contrôleur cible doit être Windows')
+    body = {
+        'command': '!aegismesh-soar-ad.cmd',
+        'arguments': [],
+        'alert': {'data': {
+            'decision_id': data['decision_id'],
+            'incident_id': data['incident_id'],
+            'user_sid': sid,
+            'domain_dns': target['domain_dns'],
+            'expires_at': data['expires_at'],
+            'confidence': data['confidence'],
+            'evidence_ids': data['evidence_ids'],
+            'approved': True,
+            'action': 'disable_account',
+        }}
+    }
+    response = wazuh_api_request('PUT','/active-response?agents_list='+agent,body,
+                                 {'Authorization':'Bearer '+token, 'Content-Type':'application/json'})
+    result = response.get('data') or {}
+    if response.get('error') or int(result.get('total_affected_items',0)) != 1:
+        raise RuntimeError('AD : Wazuh n a pas accusé réception de la commande sur le contrôleur')
+    evidence = wazuh_evidence(agent, data['decision_id'], 'adaccount', user_sid=sid)
+    error = wazuh_evidence(agent, data['decision_id'], 'adfail', user_sid=sid)
+    if error: raise RuntimeError('AD endpoint signaled failure: manual verification required')
+    return {'effect':'wazuh_ar_verified' if evidence else 'wazuh_ar_dispatched',
+            'agent_id':agent, 'action':'AD_DISABLE_ACCOUNT',
+            'user_sid':sid,'domain_dns':target['domain_dns'],
+            'agent_execution_verified':bool(evidence),'evidence_source':evidence or None,
+            'account_disabled_verified':bool(evidence)}
+
 def execute_tag(data):
     action = policy(data)
     if action == 'record_only':
@@ -610,6 +727,8 @@ def execute_tag(data):
         return wazuh_block_agent(data)
     if action == 'windows_firewall_block':
         return wazuh_block_windows(data)
+    if action == 'ad_account_disable':
+        return wazuh_disable_ad_account(data)
     if action in ('edr_collection','edr_quarantine'):
         import sys
         sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
@@ -801,7 +920,8 @@ def main():
         'WAZUH_PASSWORD', 'WAZUH_CA_FILE', 'WAZUH_TLS_INSECURE', 'WAZUH_PROD_AGENT_IDS',
         'WAZUH_WINDOWS_AGENT_IDS', 'WAZUH_WINDOWS_DC_AGENT_IDS',
         'SHUFFLE_WEBHOOK_HEADER_NAME', 'SHUFFLE_WEBHOOK_HEADER_VALUE',
-        'ENABLE_EDR_ISOLATION','EDR_ISOLATION_AGENT_IDS')})
+        'ENABLE_EDR_ISOLATION','EDR_ISOLATION_AGENT_IDS',
+        'ENABLE_AD_REMEDIATION','AD_DC_AGENT_ID','AD_DOMAIN_DNS')})
     for name in ('DECISION_TOKEN', 'SHUFFLE_ACTION_TOKEN'):
         if len(setting(name)) < 32:
             raise SystemExit(f'{name} needs at least 32 characters')

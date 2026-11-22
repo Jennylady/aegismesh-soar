@@ -57,6 +57,7 @@ def status():
     print('Décisions de production:',conf.get('ENABLE_PROD_ACTIONS','false'))
     print('Windows LAB:',conf.get('WAZUH_WINDOWS_AGENT_IDS','non configuré'))
     print('Windows AD (blocage IP limité):',conf.get('WAZUH_WINDOWS_DC_AGENT_IDS','non configuré'))
+    print('AD/LDAP remediation:', 'activée' if conf.get('ENABLE_AD_REMEDIATION')=='true' else 'désactivée', 'DC='+str(conf.get('AD_DC_AGENT_ID') or '?'))
     try:
         token=bridge.wazuh_auth_token()
         data=bridge.wazuh_api_request('GET','/agents?agents_list=001,002,006&limit=10',None,{'Authorization':'Bearer '+token})
@@ -107,7 +108,7 @@ def catalog():
     print('EDR_ISOLATE          label Quarantine Velociraptor, autorisé seulement après API mTLS,')
     print('                     correspondance agent unique, timer de retrait et autorisation explicite')
     print('EDR_RELEASE          retrait de la quarantaine SOAR exclusivement; pas de quarantaine externe')
-    print('AD_DISABLE_ACCOUNT   NON IMPLEMENTÉ : attend l’étape AD/LDAP, stratégie dédiée')
+    print('AD_DISABLE_ACCOUNT   agent DC Wazuh dédié, SID utilisateur, compte dans groupe opt-in, preuve et vérification AD')
     print('Aucune commande libre, pas de score ou preuve inventés : incidents Personne 1 → SOAR.')
 
 
