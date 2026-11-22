@@ -1,3 +1,10 @@
+## V4.2.3 — Détection fiable du port Wazuh (1514/TCP)
+
+- Corrige un faux négatif dans le contrôle `ss -lntp` : l'ancien motif écartait `0.0.0.0:1514` à cause du chiffre précédant `:`.
+- Analyse la colonne locale et le champ processus, exige un port TCP 1514 exact et l'attribution explicite à `wazuh-remoted` ; refuse les autres propriétaires, PID absents ou résultats incomplets.
+- Convertit les erreurs de précondition du module Tenzir en messages CLI propres, sans traceback Python dû à la double importation de `AuditError`.
+- Aucun changement Wazuh, Tenzir, Docker, pare-feu, Shuffle, EDR, secrets ou décisions lors de l'update. La suspension optionnelle des pipelines requiert toujours `--confirm`, conserve la sauvegarde et le rollback.
+
 ## V4.2.2 — Conflit de ports Tenzir/Wazuh, mode pipeline optionnel
 
 - Confirme le conflit réel : Wazuh `wazuh-remoted` conserve `1514/TCP` ; Tenzir veut publier `1514/TCP` via toutes interfaces.

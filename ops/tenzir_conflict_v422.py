@@ -101,8 +101,26 @@ def add_flags(text):
 
 
 def _wazuh_owns_tcp_1514():
+    """Verify the TCP listener's *local* port and actual process owner.
+
+    `ss` columns: State Recv-Q Send-Q Local-Address:Port Peer-Address:Port Process.
+    Never infer ownership from a substring elsewhere in a row (e.g. the
+    remote port or a process whose name merely contains 'wazuh-remoted').
+    If the PID cannot be read, fail closed rather than altering Compose.
+    """
     p=audit.command(['ss','-lntp'],timeout=6)
-    return p.returncode==0 and any('wazuh-remoted' in line and re.search(r'(?<!\d):1514\s',line) for line in p.stdout.splitlines())
+    if p.returncode:return False
+    seen=False
+    for line in p.stdout.splitlines():
+        fields=line.split(None,5)
+        if len(fields)<6 or fields[0]!='LISTEN':continue
+        address,sep,port=fields[3].rpartition(':')
+        if not sep or port!='1514':continue
+        seen=True
+        owners=re.findall(r'\("([^"]+)",pid=\d+(?:,fd=\d+)?\)',fields[5])
+        if not owners or any(owner!='wazuh-remoted' for owner in owners):
+            return False
+    return seen
 
 
 def _running_container(name):

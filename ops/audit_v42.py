@@ -373,12 +373,17 @@ def main(argv=None):
         elif a.action=='tenzir':
             if sum((a.repair,a.disable_pipelines,a.pipeline_status))>1:
                 raise AuditError('Choisir une seule opération Tenzir')
-            if a.disable_pipelines:
-                from ops.tenzir_conflict_v422 import disable_pipelines
-                output=disable_pipelines(confirm=a.confirm)
-            elif a.pipeline_status:
-                from ops.tenzir_conflict_v422 import check_status
-                output=check_status()
+            if a.disable_pipelines or a.pipeline_status:
+                # `python ops/audit_v42.py` runs this module as __main__, while
+                # tenzir_conflict_v422 imports it as ops.audit_v42. Their
+                # AuditError classes are distinct: convert explicitly to avoid
+                # printing a raw traceback for a safe guardrail refusal.
+                from ops import tenzir_conflict_v422 as pipelines
+                try:
+                    output=(pipelines.disable_pipelines(confirm=a.confirm) if a.disable_pipelines
+                            else pipelines.check_status())
+                except pipelines.audit.AuditError as exc:
+                    raise AuditError(str(exc)) from exc
             else:output=repair_tenzir(confirm=a.confirm) if a.repair else tenzir_status()
         elif a.action=='worker':output=prove_worker(confirm=a.confirm,timeout=a.timeout)
         elif a.action=='blocks':output=block_inventory(probe=a.probe,confirm=a.confirm)

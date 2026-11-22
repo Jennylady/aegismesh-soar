@@ -130,3 +130,21 @@ aegismesh-soar audit worker --confirm --timeout 90
 Le script **refuse** les situations qu'il ne reconnaît pas : mauvais propriétaire de port, projet Compose différent, service arrêté, YAML inhabituel, variables de pipelines déjà renseignées, changement inattendu dans la sortie `docker compose config`, etc. Il sauvegarde le fichier Compose dans un répertoire privé en dehors du dépôt Git et restaure le fichier original si le redéploiement Orborus ou les contrôles après redémarrage échouent.
 
 Il ne répare **pas** le nœud Tenzir ; `tenzir-node` peut rester `Created`. Si les fonctions Sigma/pipelines doivent être conservées, la solution de fond est un déploiement Tenzir distinct et une connexion Shuffle via l'API Tenzir sur réseau interne (sans liaisons host 1514). Ce déploiement exige de contrôler la compatibilité des versions et les volumes persistants ; il n'est PAS inclus dans V4.2.2.
+
+## V4.2.3 — Vérification stricte du port 1514/TCP Wazuh
+
+Le code V4.2.2 lisait mal la sortie de `ss -lntp`: le motif `(?<!\d):1514\s` ne reconnaissait pas `0.0.0.0:1514`, même quand le champ Process indiquait `wazuh-remoted`. Le test V4.2.3 analyse la colonne *Local Address:Port* et les noms exacts des processus avec leurs PID. Aucun changement Docker ou Wazuh n'a lieu à l'étape `update`.
+
+```bash
+aegismesh-soar update
+aegismesh-soar audit tenzir --pipeline-status
+# Doit afficher wazuh_1514_tcp_owner = wazuh-remoted et Compose attendu.
+# Choisir uniquement si les pipelines Sigma/Tenzir ne sont pas requis :
+aegismesh-soar audit tenzir --disable-pipelines --confirm
+aegismesh-soar audit tenzir --pipeline-status
+aegismesh-soar audit worker --confirm --timeout 90
+ss -lntp | grep ':1514'
+docker logs --since 2m --tail 50 shuffle-orborus
+```
+
+**Critères de réussite :** `pipelines_disabled=true`, Orborus actif, port `1514/TCP` toujours associé à `wazuh-remoted`, plus de nouvelles tentatives de démarrage de Tenzir, et décision Shuffle `OBSERVE` terminée. L'ancien conteneur Tenzir peut rester à l'état `Created` : l'arrêt des pipelines n'est pas une remise en état de Tenzir. Les erreurs `frikky/shuffle:shufflehealthcheck_*` doivent être examinées séparément si elles persistent après la suspension.

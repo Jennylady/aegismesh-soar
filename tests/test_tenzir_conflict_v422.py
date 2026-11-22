@@ -88,3 +88,52 @@ with tempfile.TemporaryDirectory() as temp:
     finally:
         for p in reversed(common):p.stop()
 print('PASS: V4.2.2 Compose changes limited to Orborus; Wazuh 1514 precondition; backup and rollback tests')
+
+# V4.2.3: reproduce the exact `ss` output seen on GCP and ensure fail-closed
+# behavior with other listeners and ambiguous process ownership.
+def _fake_ss(output, rc=0):
+    return mock.Mock(returncode=rc,stdout=output,stderr='')
+
+GCP_SS='''State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+LISTEN 0      128               0.0.0.0:1514       0.0.0.0:*    users:(("wazuh-remoted",pid=3238690,fd=4))
+'''
+with mock.patch.object(audit,'command',return_value=_fake_ss(GCP_SS)) as cmd:
+    assert t._wazuh_owns_tcp_1514() is True
+    cmd.assert_called_once_with(['ss','-lntp'],timeout=6)
+with mock.patch.object(audit,'command',return_value=_fake_ss('''LISTEN 0 128 [::]:1514 [::]:* users:(("wazuh-remoted",pid=12,fd=2))
+''')):
+    assert t._wazuh_owns_tcp_1514() is True
+BAD = [
+    GCP_SS.replace('wazuh-remoted','nginx'),
+    GCP_SS.replace('wazuh-remoted','fake-wazuh-remoted'),
+    GCP_SS.replace('0.0.0.0:1514','0.0.0.0:15140'),
+    GCP_SS.replace('users:(("wazuh-remoted",pid=3238690,fd=4))','-'),
+    GCP_SS.replace('users:(("wazuh-remoted",pid=3238690,fd=4))','users:(("wazuh-remoted",fd=4))'),
+    GCP_SS.replace('0.0.0.0:1514','0.0.0.0:1515').replace('0.0.0.0:*','0.0.0.0:1514'),
+    GCP_SS+'LISTEN 0 128 [::]:1514 [::]:* users:(("nginx",pid=13,fd=2))\n',
+]
+for case in BAD:
+    with mock.patch.object(audit,'command',return_value=_fake_ss(case)):
+        assert t._wazuh_owns_tcp_1514() is False,case
+with mock.patch.object(audit,'command',return_value=_fake_ss(GCP_SS,rc=1)):
+    assert t._wazuh_owns_tcp_1514() is False
+
+# Executed as a file, ops.audit_v42 is a different Python module from
+# __main__. The guardrail must yield a clean CLI error, not a traceback.
+import io,runpy
+from contextlib import redirect_stderr,redirect_stdout
+old_argv=sys.argv[:]
+try:
+    sys.argv=[str(ROOT/'ops/audit_v42.py'),'tenzir','--disable-pipelines','--confirm']
+    with mock.patch.object(t,'disable_pipelines',side_effect=audit.AuditError('Protection Wazuh 1514')):
+        out,err=io.StringIO(),io.StringIO()
+        with redirect_stdout(out),redirect_stderr(err):
+            try:
+                runpy.run_path(str(ROOT/'ops/audit_v42.py'),run_name='__main__')
+                raise AssertionError('Unexpected successful CLI exit')
+            except SystemExit as exc:assert exc.code==2,exc.code
+        assert 'AEGISMESH AUDIT:' in err.getvalue(),err.getvalue()
+        assert 'Traceback' not in err.getvalue(),err.getvalue()
+finally:
+    sys.argv=old_argv
+print('PASS: V4.2.3 exact Wazuh TCP 1514 ownership and clean fail-closed CLI errors')
