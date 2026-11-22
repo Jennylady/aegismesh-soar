@@ -220,6 +220,53 @@ def monitoring_logs(agent):
             'endpoint_network_isolation_verified': False}
 
 
+def monitor_results(agent):
+    """Read actual Windows.Quarantine output, NOT the log("Setting...") messages.
+
+    The result stream is produced by the remote Windows event artifact, and
+    reports each netsh command plus the Velociraptor frontend reachability
+    check.  It is still *not* a measured network-isolation proof.
+    """
+    edr.require_root()
+    if agent != LAB_AGENT:
+        raise PermissionError('Résultats laboratoire limités à WIN-LAB-01 (001)')
+    cid = edr.linked(agent)
+    if cid != LAB_CLIENT:
+        raise PermissionError('Correspondance Wazuh/Velociraptor modifiée')
+    rows = edr.api_query(edr.READ_QUARANTINE_RESULTS, {'ClientId': cid})
+    if not isinstance(rows, list):
+        raise RuntimeError('Résultats EDR inattendus')
+    # Preserve original result rows for forensic traceability.  Detect common
+    # error patterns only as *hints*, never as endpoint packet-filtering proof.
+    messages = [str(row.get('Result','')) for row in rows if isinstance(row, dict)]
+    lowered = '\n'.join(messages).casefold()
+    failed_test = 'failed connection test' in lowered
+    applied = 'ipsec policy applied' in lowered
+    removed = 'ipsec policy removed' in lowered
+    # Netsh stderr can be localized: expose raw bounded rows, no false positive.
+    if failed_test:
+        note = 'Le client a échoué au test Velociraptor frontend et retire la politique : examiner URL/port et certificats EDR, sans désactiver les protections.'
+    elif not rows:
+        note = 'Aucun résultat de l artefact reçu : vérifier l acheminement monitoring et ses journaux ; ne pas conclure à une isolation.'
+    elif applied and removed:
+        note = 'La politique a été appliquée puis retirée dans la fenêtre consultée ; corréler les horodatages et les essais LDAP.'
+    elif applied:
+        note = 'Velociraptor rapporte avoir appliqué la politique ; confirmer l effet réel depuis WIN-LAB-01 et vérifier les éventuelles exceptions.'
+    else:
+        note = 'Résultats disponibles sans preuve d application : lire les messages netsh et la configuration IPsec/GPO.'
+    return {
+        'agent_id': agent, 'client_id': cid,
+        'artifact': 'Windows.Remediation.QuarantineMonitor',
+        'window_seconds': 3600,
+        'results': rows[-80:],
+        'artifact_reports_policy_applied': applied,
+        'artifact_reports_policy_removed': removed,
+        'artifact_reports_failed_frontend_test': failed_test,
+        'endpoint_network_isolation_verified': False,
+        'note': note,
+    }
+
+
 def main(argv=None):
     import argparse
     p=argparse.ArgumentParser(description='AEGISMESH LAB / isolation réelle limitée à WIN-LAB-01')
@@ -227,7 +274,7 @@ def main(argv=None):
     start_parser=s.add_parser('start');start_parser.add_argument('--agent-id',required=True)
     start_parser.add_argument('--confirm',action='store_true')
     start_parser.add_argument('--console-access',action='store_true')
-    for cmd in ('status', 'logs', 'monitor-status'):
+    for cmd in ('status', 'logs', 'results', 'monitor-status'):
         sub=s.add_parser(cmd);sub.add_argument('--agent-id',required=True)
     monitor_parser=s.add_parser('monitor-ensure');monitor_parser.add_argument('--agent-id',required=True)
     monitor_parser.add_argument('--confirm',action='store_true')
@@ -240,6 +287,7 @@ def main(argv=None):
         elif a.action=='monitor-status': result=monitor_status(a.agent_id)
         elif a.action=='monitor-ensure': result=ensure_monitor(a.agent_id,confirm=a.confirm)
         elif a.action=='release': result=stop(a.agent_id,confirm=a.confirm)
+        elif a.action=='results': result=monitor_results(a.agent_id)
         else: result=monitoring_logs(a.agent_id)
         print(json.dumps(result,ensure_ascii=False,indent=2))
         return 0

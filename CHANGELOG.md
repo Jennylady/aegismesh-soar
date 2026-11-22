@@ -1,3 +1,8 @@
+## 4.2.9 — Résultats réels de la politique de quarantaine Velociraptor
+- `aegismesh-soar edr lab-quarantine results --agent-id 001` : interroge, en lecture seule, le flux **résultats** `monitoring()` de `Windows.Remediation.QuarantineMonitor`, distinct des messages `monitoring_logs()`. Les résultats peuvent expliquer pourquoi la politique IPsec ne reste pas présente (notamment un échec du test de retour vers le serveur EDR).
+- La fenêtre de lecture des résultats et des journaux est étendue à une heure pour conserver les preuves des essais précédents, uniquement pour `C.3c9cde1e0b930676`. VQL constant, aucune commande arbitraire ni mutation du client.
+- Ne confond ni sortie `Setting quarantine policy` ni réussite `netsh` avec une preuve de filtrage. N'active pas l'isolation de production, ne change pas les paramètres réseau, n'isole pas le DC et ne touche pas aux services Windows.
+
 ## 4.2.8 — Affectation automatique du moniteur Velociraptor (LAB 001)
 - Diagnostique précisément `Windows.Remediation.QuarantineMonitor` dans les groupes de surveillance Velociraptor (liste `specs` et liste `artifacts`). Ne confond plus simple présence dans la configuration avec affectation effective.
 - `aegismesh-soar edr lab-quarantine monitor-status --agent-id 001`: lecture seule, indique les groupes qui contiennent réellement le moniteur.

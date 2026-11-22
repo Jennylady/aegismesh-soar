@@ -41,7 +41,9 @@ COLLECT_LINUX_TRIAGE = "SELECT collect_client(client_id=ClientId, artifacts=['Li
 READ_MONITORING = 'SELECT get_client_monitoring() AS monitoring FROM scope() LIMIT 1'
 # Fixed admin VQL, not caller supplied. Scope: quarantine label group only.
 ADD_QUARANTINE_MONITOR = "SELECT add_client_monitoring(artifact='Windows.Remediation.QuarantineMonitor', label='Quarantine') AS result FROM scope()"
-READ_QUARANTINE_LOGS = "SELECT * FROM monitoring_logs(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 600) LIMIT 20"
+READ_QUARANTINE_LOGS = "SELECT * FROM monitoring_logs(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 3600) LIMIT 80"
+# Distinct from monitoring_logs: these rows contain netsh results and frontend check outcome.
+READ_QUARANTINE_RESULTS = "SELECT * FROM monitoring(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 3600) LIMIT 100"
 READ_FLOWS = 'SELECT * FROM flows(client_id=ClientId) LIMIT 50'
 READ_FLOW = 'SELECT * FROM flows(client_id=ClientId, flow_id=FlowId) LIMIT 2'
 READ_FLOW_DETAILS = 'SELECT get_flow(client_id=ClientId, flow_id=FlowId) AS details FROM scope() LIMIT 1'
@@ -126,7 +128,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,READ_QUARANTINE_LOGS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')
