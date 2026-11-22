@@ -25,6 +25,8 @@ class PreviewFake:
             c['label_events'][0]['artifacts']['specs']=[{
               'artifact':N,'parameters':{'env':[{'key':'RuleLookupTable','value':edr.WG_LAB_RULE_TABLE}]}}]
             return [{'monitoring':c}]
+        if query == edr.WG_MONITOR_JSON_PREVIEW_QUERIES[(0,False)]:
+            return [{'monitoring':None}]
         if query == edr.WG_MONITOR_PATCH_QUERIES[(0,False)]:
             return [{'result':True}] # simulates nonpersistent server
         raise AssertionError('unexpected VQL')

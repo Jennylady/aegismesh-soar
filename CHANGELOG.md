@@ -1,3 +1,9 @@
+## 4.2.14 — Patch JSON typé pour la table de monitoring Velociraptor
+- Le diagnostic réel V4.2.13 renvoie `patch_preview_valid: false` avec `Liste des spécifications du monitoring invalide` : la transformation VQL par `dict`/liste littérale ne produit pas systématiquement une liste de spécifications exploitable.
+- Ajoute une seconde variante RFC 6902, construite avec `parse_json_array(data=...)` et une valeur de spécification encodée JSON. La variante est tentée exclusivement en lecture seule si la prévisualisation VQL d'origine n'est pas valide. Ne tente jamais une écriture sans validation complète de RuleLookupTable et sans vérification des autres groupes.
+- `transport-diagnose` indique la variante valide et les types non sensibles des échecs; `transport-ensure` utilise uniquement la variante prévalidée puis relit la configuration effectivement enregistrée. Aucune quarantaine déclenchée par cette mise à jour.
+- L’exception reste limitée à l’UDP WireGuard `136.116.89.163:51820`. Pas de modification AD, TLS, VPN, agents ou activation de la politique de production. Tests unitaires simulés ; persistance sur serveur réel et isolation Windows non encore confirmées.
+
 ## 4.2.13 — Prévisualisation réelle du patch Velociraptor (fail-closed)
 - Ajoute `transport-diagnose` en lecture seule : exécute côté serveur le `patch(get_client_monitoring())` de production, vérifie le moniteur exact et renvoie un verdict sans exposer RuleLookupTable ni aucune donnée d’agent.
 - `transport-ensure` vérifie désormais la transformation VQL en lecture seule avant toute écriture. L’absence de paramètres dès l’étape de prévisualisation provoque un refus explicite, au lieu de répéter des appels `set_client_monitoring()` qui ne peuvent pas aboutir.

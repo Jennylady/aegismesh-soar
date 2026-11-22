@@ -269,18 +269,62 @@ def transport_status(agent):
             'note':'Le maintien de WireGuard ne suffit pas à prouver la réponse TLS de /server.pem'}
 
 
+def _preview_shape(proposed, index):
+    """Only expose data *types*, never raw artifact settings or secrets."""
+    if isinstance(proposed, str):
+        try: proposed=json.loads(proposed)
+        except (ValueError, TypeError):
+            return {'table_type': 'invalid_json_string'}
+    if not isinstance(proposed, dict):
+        return {'table_type':type(proposed).__name__}
+    groups=proposed.get('label_events')
+    if not isinstance(groups, list) or index >= len(groups):
+        return {'table_type':'dict', 'groups_type':type(groups).__name__}
+    data=groups[index].get('artifacts') if isinstance(groups[index],dict) else None
+    specs=data.get('specs') if isinstance(data,dict) else None
+    return {'table_type':'dict','specs_type':type(specs).__name__,
+            'specs_length':len(specs) if isinstance(specs,list) else None,
+            'spec_item_types':[type(x).__name__ for x in specs[:3]] if isinstance(specs,list) else []}
+
+
+def _transport_preview_choice(index, append):
+    """Prefer an exact pre-validated existing patch, try JSON-typed RFC6902
+    only if Velociraptor cannot represent the legacy VQL literal correctly.
+    Neither candidate writes anything, and both must pass strict validation.
+    """
+    failures=[]
+    attempts=(('legacy_vql', edr.WG_MONITOR_PREVIEW_QUERIES[(index,append)],
+               edr.WG_MONITOR_PATCH_QUERIES[(index,append)]),
+              ('json_rfc6902',edr.WG_MONITOR_JSON_PREVIEW_QUERIES[(index,append)],
+               edr.WG_MONITOR_JSON_PATCH_QUERIES[(index,append)]))
+    for name, preview_query, write_query in attempts:
+        try:
+            rows=edr.api_query(preview_query)
+            if len(rows)!=1 or not isinstance(rows[0],dict):
+                failures.append({'variant':name,'problem':'no_structured_response'})
+                continue
+            proposed=rows[0].get('monitoring')
+            if proposed is None:
+                failures.append({'variant':name,'problem':'null_preview'})
+                continue
+            try:
+                spec=_quarantine_spec(proposed)
+                if _rule_table(spec)==edr.WG_LAB_RULE_TABLE.strip():
+                    return proposed, name, write_query, failures
+                failures.append({'variant':name,'problem':'rule_table_mismatch',
+                                 'shape':_preview_shape(proposed,index)})
+            except (RuntimeError, ValueError, PermissionError) as exc:
+                failures.append({'variant':name,'problem':str(exc),
+                                 'shape':_preview_shape(proposed,index)})
+        except (RuntimeError, ValueError, PermissionError) as exc:
+            failures.append({'variant':name,'problem':type(exc).__name__})
+    raise RuntimeError('Prévisualisation VQL invalide pour les deux variantes : '
+                       +json.dumps(failures,ensure_ascii=False))
+
+
 def _transport_preview(index, append):
-    """Dry-run the EXACT VQL patch and validate its result before any write."""
-    rows = edr.api_query(edr.WG_MONITOR_PREVIEW_QUERIES[(index, append)])
-    if len(rows) != 1 or not isinstance(rows[0], dict):
-        raise RuntimeError('Prévisualisation VQL absente : écriture interdite')
-    proposed = rows[0].get('monitoring')
-    if proposed is None:
-        raise RuntimeError('Prévisualisation VQL NULL : écriture interdite (examiner permissions VQL et types JSON)')
-    spec = _quarantine_spec(proposed)
-    if _rule_table(spec) != edr.WG_LAB_RULE_TABLE.strip():
-        raise RuntimeError('Prévisualisation VQL sans exception WireGuard : écriture interdite')
-    return proposed
+    """Backwards-compatible read-only wrapper for tests and local consumers."""
+    return _transport_preview_choice(index, append)[0]
 
 
 def transport_diagnose(agent):
@@ -299,8 +343,10 @@ def transport_diagnose(agent):
         index, append, _ = _monitoring_patch_target()
         details['quarantine_group_index'] = index
         details['existing_other_specs'] = append
-        proposed = _transport_preview(index, append)
+        proposed, variant, _, failures = _transport_preview_choice(index, append)
         details['patch_preview_valid'] = True
+        details['patch_variant'] = variant
+        details['legacy_preview_failures'] = failures
         details['preview_artifact_custom_parameter_verified'] = (_rule_table(_quarantine_spec(proposed)) == edr.WG_LAB_RULE_TABLE.strip())
         details['diagnosis'] = 'preview_valid; server write persistence must be evaluated separately'
     except (RuntimeError, ValueError, PermissionError) as exc:
@@ -344,8 +390,19 @@ def transport_ensure(agent, *, confirm=False):
         index, append, before_table = _monitoring_patch_target()
         # V4.2.13: check what the server's OWN VQL patch function will
         # produce. Prior mock tests incorrectly assumed patch always worked.
-        _transport_preview(index, append)
-        query = edr.WG_MONITOR_PATCH_QUERIES[(index, append)]
+        proposed, variant, query, failures = _transport_preview_choice(index, append)
+        # The preview may not mutate any other group or global setting.
+        check_table = json.loads(proposed) if isinstance(proposed, str) else proposed
+        if not isinstance(check_table, dict):
+            raise RuntimeError('Prévisualisation invalide : table non structurée')
+        before_global={k:v for k,v in before_table.items() if k!='label_events'}
+        preview_global={k:v for k,v in check_table.items() if k!='label_events'}
+        before_groups=before_table.get('label_events') or []
+        preview_groups=check_table.get('label_events') or []
+        if (before_global!=preview_global or not isinstance(preview_groups,list) or
+            len(before_groups)!=len(preview_groups) or
+            any(a!=b for j,(a,b) in enumerate(zip(before_groups,preview_groups)) if j!=index)):
+            raise RuntimeError('Prévisualisation affecte des groupes non ciblés : écriture interdite')
         response = edr.api_query(query)
         if len(response) != 1 or not isinstance(response[0], dict):
             raise RuntimeError('API set_client_monitoring sans réponse structurée : ne pas isoler')
@@ -374,7 +431,7 @@ def transport_ensure(agent, *, confirm=False):
         b_groups, a_groups = before_table.get('label_events', []), after_table.get('label_events', [])
         if len(b_groups) != len(a_groups) or any(bg != ag for i,(bg,ag) in enumerate(zip(b_groups,a_groups)) if i != index):
             raise RuntimeError('Modification inattendue des autres labels : contrôle requis avant isolement')
-    return {'status':'configured_no_quarantine_started', **transport_status(agent),
+    return {'status':'configured_no_quarantine_started', 'patch_variant':variant, **transport_status(agent),
             'scope':'Quarantine monitoring label; seule la cible LAB 001 est autorisée à déclencher cette quarantaine'}
 
 
