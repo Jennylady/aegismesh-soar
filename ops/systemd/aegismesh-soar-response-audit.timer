@@ -1,0 +1,13 @@
+[Unit]
+Description=AEGISMESH SOAR observe block expiry and rollback proof every two minutes
+X-Aegismesh-Soar-Managed=yes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=true
+Unit=aegismesh-soar-response-audit.service
+
+[Install]
+WantedBy=timers.target

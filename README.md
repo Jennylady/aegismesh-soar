@@ -1,3 +1,7 @@
+### Correctif V4.0.1 — compatibilité des tests sous Windows
+
+Les tests `tests/test_edr_triage_v40.py` utilisent des mocks pour contourner *uniquement pendant les tests* le contrôle root réservé aux commandes exécutées sur GCP. En production, les actions EDR restent limitées à Linux root, et aucune action n'est lancée pendant les tests.
+
 ### Nouveau : remédiation AD/LDAP V3.8.0
 
 L'action `AD_DISABLE_ACCOUNT` est implémentée, mais **désactivée par défaut**. Elle réutilise les vrais rappels Shuffle / Wazuh agent `006`, exécute `Disable-ADAccount` uniquement sur un utilisateur SID du domaine inscrit dans le groupe d'éligibilité et vérifie `Enabled=False` avant de publier une preuve. Pour la procédure Windows DC / GCP et les limites de sécurité, voir `docs/AD-LDAP-REMEDIATION-V3.8.md`. Aucun score ni preuve d'incident n'est généré par le dépôt SOAR.
@@ -187,3 +191,8 @@ If `ad probe` reports `Connection refused` on the local Wazuh API after a manage
 ### Correctif V3.9.2 — Soumission du test AD sur la passerelle Docker locale
 
 `aegismesh-soar ad lab-disable --sid <SID réel> --confirm` fonctionne si `SOAR_BIND_HOST` est une adresse IPv4 **appartenant à une interface du serveur** (par exemple sa passerelle Docker), et non uniquement `127.0.0.1`. Une cible distante est refusée. Le test `POST /v1/decisions` utilise toujours le jeton authentifié; la fenêtre AD est ouverte uniquement après sonde `/health` réussie.
+
+
+### V4.0 — Réponse et isolation progressive
+
+Voir [Response lifecycle V4.0](docs/RESPONSE-LIFECYCLE-V4.0.md). Nouvelles commandes `aegismesh-soar response audit|verify-block|check|incident|progressive-status|enable-progressive|enable-expiry-audit`; `edr triage|attest|quarantine-doctor`. Aucune nouvelle action de blocage/isolement n est exécutée automatiquement lors de la mise à jour.

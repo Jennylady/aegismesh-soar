@@ -13,7 +13,8 @@ if (-not (Test-Path -LiteralPath $base)) { $base = Join-Path $env:ProgramFiles '
 $dest = Join-Path $base 'active-response\bin'
 if (-not (Test-Path -LiteralPath $dest)) { throw 'Wazuh agent Active Response path not found' }
 foreach ($name in @('aegismesh-soar-firewall.cmd', 'aegismesh-soar-firewall.ps1',
-                    'aegismesh-soar-firewall-cleanup.ps1')) {
+                    'aegismesh-soar-firewall-cleanup.ps1',
+                    'aegismesh-soar-firewall-status.cmd', 'aegismesh-soar-firewall-status.ps1')) {
     $src = Join-Path $PSScriptRoot $name
     if (-not (Test-Path -LiteralPath $src)) { throw "Missing: $name" }
     Copy-Item -LiteralPath $src -Destination (Join-Path $dest $name) -Force -ErrorAction Stop

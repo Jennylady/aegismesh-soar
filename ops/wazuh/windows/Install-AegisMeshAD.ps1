@@ -31,7 +31,8 @@ $serviceAccount = (Get-CimInstance Win32_Service -Filter "Name='WazuhSvc'" -Erro
 if ($serviceAccount -notin @('LocalSystem','NT AUTHORITY\SYSTEM')) {
     throw 'Wazuh agent must run as LocalSystem for the fixed AD executor'
 }
-foreach ($name in @('aegismesh-soar-ad.cmd','aegismesh-soar-ad.ps1','aegismesh-soar-ad-lib.ps1')) {
+foreach ($name in @('aegismesh-soar-ad.cmd','aegismesh-soar-ad.ps1','aegismesh-soar-ad-lib.ps1',
+                    'Get-AegisMeshADSessionExposure.ps1')) {
     $src=Join-Path $PSScriptRoot $name
     if (-not (Test-Path -LiteralPath $src)) { throw "Missing installer dependency: $name" }
     $dst=Join-Path $bin $name

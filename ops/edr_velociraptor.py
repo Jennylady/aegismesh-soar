@@ -26,6 +26,7 @@ MAPPING = Path('/var/lib/aegismesh-soar/edr-agent-map.json')
 LEASES = Path('/var/lib/aegismesh-soar/edr-quarantine-leases.json')
 LOCK = Path('/var/lib/aegismesh-soar/edr-lease.lock')
 FLOW_RECORDS = Path('/var/lib/aegismesh-soar/edr-flow-tracker.json')
+LINK_ATTESTATIONS = Path('/var/lib/aegismesh-soar/edr-link-attestations.json')
 ENV = Path('/etc/aegismesh-soar/soar.env')
 RX_CLIENT = re.compile(r'C\.[0-9a-fA-F]{8,64}\Z')
 RX_AGENT = re.compile(r'\d{3}\Z')
@@ -35,10 +36,19 @@ SAFE_ARTIFACT = 'Generic.Client.Info'
 READ_CLIENTS = 'SELECT client_id, os_info.hostname AS hostname, os_info.system AS os, labels FROM clients() LIMIT 200'
 READ_LABEL = 'SELECT client_id, labels FROM clients(client_id=ClientId)'
 COLLECT = "SELECT collect_client(client_id=ClientId, artifacts='Generic.Client.Info', env=dict()) AS collection FROM scope()"
+COLLECT_WIN_TRIAGE = "SELECT collect_client(client_id=ClientId, artifacts=['Windows.System.Pslist', 'Windows.Network.Netstat'], env=dict()) AS collection FROM scope()"
+COLLECT_LINUX_TRIAGE = "SELECT collect_client(client_id=ClientId, artifacts=['Linux.Sys.Pslist', 'Linux.Network.Netstat'], env=dict()) AS collection FROM scope()"
+READ_MONITORING = 'SELECT get_client_monitoring() AS monitoring FROM scope() LIMIT 1'
 READ_FLOWS = 'SELECT * FROM flows(client_id=ClientId) LIMIT 50'
 READ_FLOW = 'SELECT * FROM flows(client_id=ClientId, flow_id=FlowId) LIMIT 2'
 READ_FLOW_DETAILS = 'SELECT get_flow(client_id=ClientId, flow_id=FlowId) AS details FROM scope() LIMIT 1'
 READ_FLOW_RESULTS = "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Generic.Client.Info/BasicInformation') LIMIT 20"
+TRIAGE_RESULT_QUERIES = {
+    'Windows.System.Pslist': "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Windows.System.Pslist') LIMIT 20",
+    'Windows.Network.Netstat': "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Windows.Network.Netstat') LIMIT 20",
+    'Linux.Sys.Pslist': "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Linux.Sys.Pslist') LIMIT 20",
+    'Linux.Network.Netstat': "SELECT * FROM flow_results(client_id=ClientId, flow_id=FlowId, artifact='Linux.Network.Netstat') LIMIT 20",
+}
 SET_QUARANTINE = "SELECT label(client_id=ClientId, labels=['Quarantine'], op='set') AS result FROM scope()"
 REMOVE_QUARANTINE = "SELECT label(client_id=ClientId, labels=['Quarantine'], op='remove') AS result FROM scope()"
 
@@ -68,7 +78,11 @@ def atomic_json(path, data):
 
 
 def require_root():
-    if os.geteuid() != 0: raise PermissionError('root requis sur GCP pour secrets et contrôles EDR')
+    # GCP Linux only. Windows Python has no os.geteuid(); refuse cleanly
+    # instead of throwing AttributeError. Offline tests mock this guard.
+    get_euid = getattr(os, 'geteuid', None)
+    if os.name != 'posix' or not callable(get_euid) or get_euid() != 0:
+        raise PermissionError('root Linux requis sur GCP pour secrets et contrôles EDR')
 
 
 def read_env():
@@ -109,7 +123,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')
@@ -190,6 +204,52 @@ def auto_link():
     return updated,unmatched
 
 
+
+def attest_link(agent, *, confirm):
+    """Persist a short-lived, explicit identity attestation for renamed hosts.
+
+    Linking is not equivalent to an authentication proof. A fresh Wazuh active
+    record and an existing Velociraptor mTLS client are both required. It only
+    permits the *already stored* one-to-one ID mapping; no new link is created.
+    """
+    require_root()
+    if not confirm: raise PermissionError('--confirm obligatoire pour l attestation des hôtes')
+    cid=linked(agent)
+    client=valid_client(cid)
+    wazuh=next((x for x in wazuh_agents() if str(x.get('id'))==agent),None)
+    if not wazuh or wazuh.get('status')!='active':
+        raise PermissionError('Agent Wazuh non connecté : attestation impossible')
+    wazuh_os=' '.join(str(v) for v in (wazuh.get('os') or {}).values()).lower()
+    if ('windows' in wazuh_os)!=('windows' in client_os(client)):
+        raise PermissionError('Famille OS différente : attestation interdite')
+    if not str(client.get('hostname','')).strip() or not str(wazuh.get('name','')).strip():
+        raise PermissionError('Hôtes sans noms vérifiables')
+    until=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=2)).isoformat()
+    rows=read_json(LINK_ATTESTATIONS,{})
+    rows[agent]={'client_id':cid,'wazuh_name':str(wazuh.get('name','')),
+                 'edr_hostname':str(client.get('hostname','')),'expires_at':until}
+    atomic_json(LINK_ATTESTATIONS,rows)
+    return {'agent_id':agent,'wazuh_name':str(wazuh.get('name','')),
+            'edr_client_id':cid,'edr_hostname':str(client.get('hostname','')),
+            'expires_at':until,'mapping_explicitly_attested':True,
+            'isolation_effect_verified':False}
+
+
+def identity_corresponds(agent, client, wazuh):
+    wname=str(wazuh.get('name','')).lower().split('.')[0]
+    cname=str(client.get('hostname','')).lower().split('.')[0]
+    if wname and wname==cname:return True
+    cid=str(client.get('client_id',''))
+    if not RX_CLIENT.fullmatch(cid):return False
+    record=read_json(LINK_ATTESTATIONS,{}).get(agent,{})
+    try:
+        expires=dt.datetime.fromisoformat(record['expires_at'])
+    except (KeyError,TypeError,ValueError):return False
+    return bool(expires.tzinfo and expires>dt.datetime.now(dt.timezone.utc) and
+                record.get('client_id')==cid and
+                str(record.get('wazuh_name','')).casefold()==str(wazuh.get('name','')).casefold() and
+                str(record.get('edr_hostname','')).casefold()==str(client.get('hostname','')).casefold())
+
 def labels_for(cid):
     rows=api_query(READ_LABEL, {'ClientId':cid})
     if len(rows)!=1 or rows[0].get('client_id') !=cid:
@@ -254,13 +314,19 @@ def request_quarantine(agent, decision_id, *, ttl=300):
     wazuh=check_allowed(agent)
     cid=linked(agent)
     client=valid_client(cid)
-    if str(wazuh.get('name','')).lower().split('.')[0] != str(client.get('hostname','')).lower().split('.')[0]:
-        raise PermissionError('Correspondance Wazuh / EDR divergente : quarantaine refusée')
+    if not identity_corresponds(agent,client,wazuh):
+        raise PermissionError('Correspondance Wazuh / EDR non attestée : quarantaine refusée')
     wazuh_os=' '.join(str(v) for v in (wazuh.get('os') or {}).values()).lower()
     if ('windows' in wazuh_os) != ('windows' in client_os(client)):
         raise PermissionError('Famille OS différente entre Wazuh et Velociraptor')
     if 'windows' not in client_os(client) and 'linux' not in client_os(client):
         raise PermissionError('Velociraptor : OS non pris en charge')
+    # Never place a label that might be inert: a server-side quarantine
+    # monitoring assignment must be visible first. This STILL does not prove
+    # that network policy was applied on the endpoint.
+    monitor=quarantine_monitoring_status(agent)
+    if not monitor['artifact_referenced_by_server_monitoring']:
+        raise PermissionError('Aucun moniteur de quarantaine Velociraptor prouvé; refus du simple label')
     with lease_lock():
         leases=read_json(LEASES,{})
         if agent in leases or 'Quarantine' in labels_for(cid):
@@ -332,6 +398,60 @@ def install_timer():
     print('Timer de désisolement EDR actif (toutes les minutes)')
 
 
+
+
+
+
+def quarantine_monitoring_status(agent):
+    """Read-only monitoring configuration: label alone is NOT network isolation."""
+    cid=linked(agent)
+    client=valid_client(cid)
+    rows=api_query(READ_MONITORING)
+    # API shapes differ by Velociraptor release. Never claim an enforced rule
+    # based solely on presence of a monitor name in an arbitrary JSON blob.
+    blob=rows[0].get('monitoring') if len(rows)==1 else None
+    text=json.dumps(blob,ensure_ascii=False) if blob is not None else ''
+    monitor='Windows.Remediation.QuarantineMonitor' if 'windows' in client_os(client) else 'Linux.Remediation.Quarantine'
+    return {'agent_id':agent,'client_id':cid,'required_artifact':monitor,
+            'artifact_referenced_by_server_monitoring':monitor in text,
+            'quarantine_label_present':'Quarantine' in labels_for(cid),
+            'lease':read_json(LEASES,{}).get(agent),
+            'network_effect_verified':False,
+            'warning':'Server-side monitor reference and label are not proof of endpoint packet filtering.'}
+
+
+def request_triage(agent, *, confirm):
+    require_root()
+    if not confirm:raise PermissionError('Confirmer une collecte EDR réelle via --confirm')
+    cid=linked(agent)
+    client=valid_client(cid)
+    wazuh=next((x for x in wazuh_agents() if str(x.get('id'))==agent),None)
+    if not wazuh or wazuh.get('status')!='active':
+        raise PermissionError('Agent Wazuh absent ou non connecté')
+    w_os=' '.join(str(v) for v in (wazuh.get('os') or {}).values()).lower()
+    is_windows='windows' in client_os(client)
+    if is_windows != ('windows' in w_os):
+        raise PermissionError('Systèmes Wazuh et Velociraptor divergents')
+    if not identity_corresponds(agent,client,wazuh):
+        raise PermissionError('Hôtes divergents et lien non attesté : edr attest --agent-id ID --confirm')
+    if not is_windows and 'linux' not in client_os(client):
+        raise PermissionError('Collecte ciblée seulement Linux / Windows')
+    # Limit duplicate collections on an endpoint still processing a previous
+    # SOAR flow. This specifically protects the Kali flow that may stay RUNNING.
+    active={'RUNNING','WAITING','PENDING','SCHEDULED','IN_PROGRESS'}
+    if any(r['state'] in active for r in flow_list(agent,only_soar=True)):
+        raise RuntimeError('Collecte SOAR toujours active sur cet agent : diagnostic plutôt que duplicata')
+    query=COLLECT_WIN_TRIAGE if is_windows else COLLECT_LINUX_TRIAGE
+    rows=api_query(query,{'ClientId':cid})
+    if len(rows)!=1 or not isinstance(rows[0].get('collection'),dict):
+        raise RuntimeError('Triage non confirmé par API Velociraptor')
+    fid=str(rows[0]['collection'].get('flow_id',''))
+    validate_flow_id(fid)
+    track_flow(agent,cid,fid,artifact='Windows.System.Pslist+Windows.Network.Netstat' if is_windows else 'Linux.Sys.Pslist+Linux.Network.Netstat')
+    return {'agent_id':agent,'client_id':cid,'flow_id':fid,'state':'REQUESTED_NOT_COMPLETED',
+            'artifacts':['Windows.System.Pslist','Windows.Network.Netstat'] if is_windows else
+            ['Linux.Sys.Pslist','Linux.Network.Netstat'],
+            'endpoint_data_verified':False}
 
 
 def validate_flow_id(value):
@@ -463,14 +583,14 @@ def is_soar_flow(row, flow_id, tracked):
     return flow_id in tracked or creator=='AEGISMESH_SOAR_API'
 
 
-def track_flow(agent, cid, flow_id, *, status='requested', result_count=None, result_hash=None):
+def track_flow(agent, cid, flow_id, *, status='requested', result_count=None, result_hash=None, artifact=SAFE_ARTIFACT):
     validate_flow_id(flow_id)
     history=read_json(FLOW_RECORDS,{})
     row=history.get(flow_id,{})
     if row and (row.get('agent_id')!=agent or row.get('client_id')!=cid):
         raise PermissionError('Flow suivi déjà associé à un autre agent')
     row.update({'agent_id':agent,'client_id':cid,'flow_id':flow_id,
-                'state':status,'artifact':SAFE_ARTIFACT,
+                'state':status,'artifact':artifact,
                 'last_checked':dt.datetime.now(dt.timezone.utc).isoformat()})
     if result_count is not None:row['result_rows']=result_count
     if result_hash is not None:row['result_sha256']=result_hash
@@ -506,15 +626,22 @@ def flow_status(agent, flow_id=None, *, include_result=True, persist=True):
              'collection_finished':state=='FINISHED','results_present':False}
     # Results accessible only for a verified FINISHED Generic.Client.Info collection.
     requested=outcome['artifacts']
-    if include_result and state=='FINISHED' and isinstance(requested,list) and SAFE_ARTIFACT in requested:
-        result=api_query(READ_FLOW_RESULTS,{'ClientId':cid,'FlowId':flow_id})
-        outcome['result_rows_sampled']=len(result)
-        outcome['sample_sha256']=hashlib.sha256(json.dumps(result,sort_keys=True,ensure_ascii=False,
-            separators=(',',':')).encode('utf-8')).hexdigest()
-        outcome['results_present']=len(result)>0
+    if include_result and state=='FINISHED' and isinstance(requested,list):
+        queries=[]
+        if SAFE_ARTIFACT in requested: queries.append((SAFE_ARTIFACT,READ_FLOW_RESULTS))
+        queries.extend((name,query) for name,query in TRIAGE_RESULT_QUERIES.items() if name in requested)
+        if queries:
+            sampled={name:api_query(query,{'ClientId':cid,'FlowId':flow_id}) for name,query in queries}
+            outcome['result_rows_sampled']=sum(len(rows) for rows in sampled.values())
+            # Preserve V3.7.4 Generic.Client.Info evidence hash semantics.
+            digest_input=sampled[SAFE_ARTIFACT] if set(sampled)=={SAFE_ARTIFACT} else sampled
+            outcome['sample_sha256']=hashlib.sha256(json.dumps(digest_input,sort_keys=True,ensure_ascii=False,
+                separators=(',',':')).encode('utf-8')).hexdigest()
+            outcome['results_present']=any(bool(rows) for rows in sampled.values())
+            outcome['sampled_artifacts']={name:len(rows) for name,rows in sampled.items()}
     if persist and (is_soar_flow(row,flow_id,read_json(FLOW_RECORDS,{}))):
         track_flow(agent,cid,flow_id,status=state,result_count=outcome['result_rows_sampled'],
-                   result_hash=outcome['sample_sha256'])
+                   result_hash=outcome['sample_sha256'],artifact='+'.join(requested) if isinstance(requested,list) and requested else SAFE_ARTIFACT)
     return outcome
 
 
@@ -558,6 +685,12 @@ def main(argv=None):
     al=s.add_parser('allow-isolation');al.add_argument('--agent-id',required=True);al.add_argument('--confirm',action='store_true')
     timer=s.add_parser('enable-expiry');timer.add_argument('--confirm',action='store_true')
     si=s.add_parser('internal-isolate');si.add_argument('--agent-id',required=True);si.add_argument('--decision-id',required=True)
+    triage=s.add_parser('triage',help='Collecte réelle bornée processus et connexions, OS spécifique')
+    triage.add_argument('--agent-id',required=True);triage.add_argument('--confirm',action='store_true')
+    qm=s.add_parser('quarantine-doctor',help='Monitor/label/lease EDR (sans prétendre preuve réseau)')
+    qm.add_argument('--agent-id',required=True)
+    att=s.add_parser('attest',help='Attester le mapping Wazuh/EDR réel d un client au nom différent')
+    att.add_argument('--agent-id',required=True);att.add_argument('--confirm',action='store_true')
     s.add_parser('release-expired')
     a=p.parse_args(argv)
     try:
@@ -658,6 +791,12 @@ def main(argv=None):
         elif a.action=='release':
             if not a.confirm:raise PermissionError('--confirm obligatoire')
             print(json.dumps(release(a.agent_id),ensure_ascii=False))
+        elif a.action=='attest':
+            print(json.dumps(attest_link(a.agent_id,confirm=a.confirm),ensure_ascii=False,indent=2))
+        elif a.action=='triage':
+            print(json.dumps(request_triage(a.agent_id,confirm=a.confirm),ensure_ascii=False,indent=2))
+        elif a.action=='quarantine-doctor':
+            print(json.dumps(quarantine_monitoring_status(a.agent_id),ensure_ascii=False,indent=2))
         elif a.action=='release-expired':return release_expired()
     except (RuntimeError,ValueError,PermissionError,FileNotFoundError) as exc:
         print('ÉCHEC EDR:',str(exc)[:250],file=sys.stderr);return 2

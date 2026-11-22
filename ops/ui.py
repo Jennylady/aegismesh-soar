@@ -17,7 +17,7 @@ def color(value, shade):
 def banner():
     if not sys.stdout.isatty(): return
     print(color('╭──────────────────────────────────────────────────╮','cyan'))
-    print(color('│  ⛨  AEGISMESH  /  SOAR CONTROL CENTER       V3  │','cyan'))
+    print(color('│  ⛨  AEGISMESH  /  SOAR CONTROL CENTER       V4  │','cyan'))
     print(color('╰──────────────────────────────────────────────────╯','cyan'))
     print('   Shuffle  ·  Wazuh Active Response  ·  Fail2ban\n')
 

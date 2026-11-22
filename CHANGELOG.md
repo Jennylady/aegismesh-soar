@@ -1,3 +1,16 @@
+## 4.0.1 — Tests EDR multiplateformes (2026-11-22)
+- `test_edr_triage_v40.py` simule explicitement le contrôle root pour les tests hors production Windows/Linux; tous les appels EDR et les écritures sont simulés.
+- `require_root()` refuse proprement l'absence de `os.geteuid` sous Windows (PermissionError au lieu d'AttributeError) et continue d'exiger root sur Linux GCP.
+- Test de non-régression `test_edr_root_guard_v401.py`. Aucune configuration ni action distante modifiée.
+
+## 4.0.0 — Evidence-based response lifecycle (2026-11-22)
+- PostgreSQL `response_checks` and exact Wazuh endpoint read-only block-state probes, bound to agent/decision/check/IP.
+- Linux nftables and Windows Firewall verified scopes, Wazuh rules 119877-119878, systemd bounded post-TTL audit timer (opt-in).
+- Optional progressive isolation gate requiring prior verified scoped block and recent completed EDR collection; no auto isolation.
+- OS-specific EDR triage, renamed Kali/Velociraptor host attestation, read-only quarantine monitor audit.
+- Windows DC Kerberos/NTLM event exposure inspection without account/session mutation.
+- Local unit tests only: no remote firewall, Windows AD or EDR action performed during patch creation.
+
 ## 3.9.2 — AD lab : appel sur interface locale Docker (2026-11-22)
 
 - Corrige `Bridge non-local` lorsque `SOAR_BIND_HOST` est la véritable passerelle Docker locale au lieu de `127.0.0.1`.

@@ -115,6 +115,11 @@ def catalog():
     print('EDR_RELEASE          retrait de la quarantaine SOAR exclusivement; pas de quarantaine externe')
     print('AD_LAB_DISABLE       test réel opérateur sur compte aegis-lab-* (sans prétendre IA)')
     print('AD_DISABLE_ACCOUNT   agent DC Wazuh dédié, SID utilisateur, compte dans groupe opt-in, preuve et vérification AD')
+    print('RESPONSE V4           sondes read-only Wazuh/nft/Windows: blocked/removed/non vérifié')
+    print('RESPONSE EXPIRY V4    audit automatique post-TTL, aucune nouvelle règle')
+    print('EDR TRIAGE V4         Windows/Linux processus+connexions; flux FINISHED requis')
+    print('EDR QUARANTINE V4     monitor serveur obligatoire + garde-fou progressif optionnel')
+    print('AD EXPOSURE V4        collecte de métadonnées de sessions Kerberos/NTLM sur DC, read-only')
     print('Aucune commande libre, pas de score ou preuve inventés : incidents Personne 1 → SOAR.')
 
 

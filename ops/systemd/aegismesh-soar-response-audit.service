@@ -1,0 +1,16 @@
+[Unit]
+Description=AEGISMESH SOAR read-only verification of expired containment rules
+After=network-online.target wazuh-manager.service
+X-Aegismesh-Soar-Managed=yes
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/aegismesh/soar
+ExecStart=/usr/bin/python3 /opt/aegismesh/soar/ops/response_lifecycle_v40.py reconcile --confirm
+TimeoutStartSec=100
+UMask=0077
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=full

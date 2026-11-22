@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT/'ops/wazuh/rules/aegismesh-soar-evidence.xml'
 DEST = Path('/var/ossec/etc/rules/aegismesh-soar-evidence.xml')
 BACKUPS = Path('/var/lib/aegismesh-soar/wazuh-rule-backups')
-IDS = {'119870', '119871', '119872', '119873', '119874', '119875', '119876'}
+IDS = {'119870', '119871', '119872', '119873', '119874', '119875', '119876', '119877', '119878'}
 
 
 class WazuhAPIReadinessError(RuntimeError):

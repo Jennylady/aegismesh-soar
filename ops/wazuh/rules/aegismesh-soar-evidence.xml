@@ -2,36 +2,116 @@
   <rule id="119870" level="5">
     <match>AEGISMESH-SOAR-PROOF decision_id=</match>
     <description>AEGISMESH SOAR - agent action proof received</description>
-    <group>aegismesh_soar,active_response,</group>
+    <group>aegismesh_soar,active_response,  <rule id="119877" level="6">
+    <match>AEGISMESH-SOAR-BLOCKSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Linux nftables block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+  <rule id="119878" level="6">
+    <match>AEGISMESH-SOAR-WINSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Windows Firewall block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+</group>
   </rule>
   <rule id="119871" level="6">
     <match>AEGISMESH-SOAR-BLOCK decision_id=</match>
     <description>AEGISMESH SOAR - Linux agent firewall block applied</description>
-    <group>aegismesh_soar,active_response,</group>
+    <group>aegismesh_soar,active_response,  <rule id="119877" level="6">
+    <match>AEGISMESH-SOAR-BLOCKSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Linux nftables block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+  <rule id="119878" level="6">
+    <match>AEGISMESH-SOAR-WINSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Windows Firewall block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+</group>
   </rule>
   <rule id="119872" level="7">
     <match>AEGISMESH-SOAR-WINBLOCK decision_id=</match>
     <description>AEGISMESH SOAR - Windows Firewall block applied</description>
-    <group>aegismesh_soar,active_response,</group>
+    <group>aegismesh_soar,active_response,  <rule id="119877" level="6">
+    <match>AEGISMESH-SOAR-BLOCKSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Linux nftables block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+  <rule id="119878" level="6">
+    <match>AEGISMESH-SOAR-WINSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Windows Firewall block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+</group>
   </rule>
   <rule id="119873" level="5">
     <match>AEGISMESH-SOAR-WINUNBLOCK decision_id=</match>
     <description>AEGISMESH SOAR - Windows Firewall containment expired and removed</description>
-    <group>aegismesh_soar,active_response,</group>
+    <group>aegismesh_soar,active_response,  <rule id="119877" level="6">
+    <match>AEGISMESH-SOAR-BLOCKSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Linux nftables block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+  <rule id="119878" level="6">
+    <match>AEGISMESH-SOAR-WINSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Windows Firewall block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+</group>
   </rule>
   <rule id="119874" level="10">
     <match>AEGISMESH-SOAR-ADACCOUNT decision_id=</match>
     <description>AEGISMESH SOAR - AD user disabled and verified by domain controller</description>
-    <group>aegismesh_soar,active_response,ad_account_action,</group>
+    <group>aegismesh_soar,active_response,ad_account_action,  <rule id="119877" level="6">
+    <match>AEGISMESH-SOAR-BLOCKSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Linux nftables block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+  <rule id="119878" level="6">
+    <match>AEGISMESH-SOAR-WINSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Windows Firewall block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+</group>
   </rule>
   <rule id="119875" level="11">
     <match>AEGISMESH-SOAR-ADFAIL decision_id=</match>
     <description>AEGISMESH SOAR - AD endpoint remediation failure or uncertain state</description>
-    <group>aegismesh_soar,active_response,ad_account_error,</group>
+    <group>aegismesh_soar,active_response,ad_account_error,  <rule id="119877" level="6">
+    <match>AEGISMESH-SOAR-BLOCKSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Linux nftables block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+  <rule id="119878" level="6">
+    <match>AEGISMESH-SOAR-WINSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Windows Firewall block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+</group>
   </rule>
   <rule id="119876" level="5">
     <match>AEGISMESH-SOAR-ADREADY decision_id=</match>
     <description>AEGISMESH SOAR - read-only AD endpoint readiness check completed</description>
-    <group>aegismesh_soar,active_response,ad_ready,</group>
+    <group>aegismesh_soar,active_response,ad_ready,  <rule id="119877" level="6">
+    <match>AEGISMESH-SOAR-BLOCKSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Linux nftables block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+  <rule id="119878" level="6">
+    <match>AEGISMESH-SOAR-WINSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Windows Firewall block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+</group>
+  </rule>
+  <rule id="119877" level="6">
+    <match>AEGISMESH-SOAR-BLOCKSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Linux nftables block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
+  </rule>
+  <rule id="119878" level="6">
+    <match>AEGISMESH-SOAR-WINSTATE decision_id=</match>
+    <description>AEGISMESH SOAR - Windows Firewall block state read-only verification</description>
+    <group>aegismesh_soar,active_response,containment_status,</group>
   </rule>
 </group>

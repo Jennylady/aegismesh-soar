@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Read-only remote verification of the exact SOAR-owned nftables block.
+
+No dynamic shell, no networking tests, no firewall mutation. Report is Wazuh
+agent-collected evidence and is tied to both the existing decision and a fresh
+single-use check ID.
+"""
+import ipaddress
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+LOG = Path('/var/ossec/logs/aegismesh-soar-evidence.log')
+NFT = '/usr/sbin/nft' if Path('/usr/sbin/nft').is_file() else '/usr/bin/nft'
+RX_ID = re.compile(r'am-[0-9a-f]{24}\Z')
+TABLE = 'aegismesh_soar_ar'
+SET = 'blocked_ipv4'
+
+
+def inspect(ip, run=subprocess.run):
+    """blocked / removed / unknown. Removed means no SOAR-owned rule, not full reachability."""
+    args = [NFT, 'list', 'set', 'inet', TABLE, SET]
+    s = run(args, capture_output=True, text=True, timeout=8)
+    c = run([NFT, 'list', 'chain', 'inet', TABLE, 'input'], capture_output=True, text=True, timeout=8)
+    if s.returncode or c.returncode:
+        # Do not mistake broken nft tooling or an incomplete rule for removal.
+        return 'unknown'
+    is_in_set = bool(re.search(r'(?<![\d.])' + re.escape(ip) + r'(?![\d.])', s.stdout))
+    chain_has_drop = 'ip saddr @'+SET+' drop' in c.stdout
+    if is_in_set and chain_has_drop:
+        return 'blocked'
+    if not is_in_set and chain_has_drop:
+        return 'removed'
+    return 'unknown'
+
+
+def process(payload):
+    if payload.get('command') != 'add':
+        raise PermissionError('Read-only Wazuh add required')
+    data = ((payload.get('parameters') or {}).get('alert') or {}).get('data') or {}
+    decision, check = data.get('decision_id'), data.get('check_id')
+    if not all(isinstance(v, str) and RX_ID.fullmatch(v) for v in (decision,check)) or decision == check:
+        raise ValueError('Invalid decision/check correlation')
+    value = ipaddress.ip_address(data.get('srcip',''))
+    if not isinstance(value, ipaddress.IPv4Address) or not value.is_global:
+        raise PermissionError('Only global public IPv4 addresses can be inspected')
+    status = inspect(str(value))
+    if status == 'unknown':
+        raise RuntimeError('Cannot establish exact nftables state')
+    return f'AEGISMESH-SOAR-BLOCKSTATE decision_id={decision} check_id={check} status={status} ip={value}'
+
+
+def main():
+    try:
+        payload = json.loads(sys.stdin.readline(16384))
+        evidence = process(payload)
+        with LOG.open('a', encoding='utf-8') as out:
+            out.write(evidence + '\n')
+        with Path('/var/ossec/logs/active-responses.log').open('a', encoding='utf-8') as out:
+            out.write(evidence + '\n')
+        return 0
+    except Exception as exc:
+        print('AEGISMESH-BLOCK-STATUS ERROR: '+type(exc).__name__,file=sys.stderr)
+        return 2
+
+if __name__ == '__main__':
+    sys.exit(main())

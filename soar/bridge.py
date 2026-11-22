@@ -238,6 +238,12 @@ def policy(data):
             raise PermissionError('EDR isolation désactivée')
         if data.get('confidence',0) < 0.95:
             raise PermissionError('Confiance EDR isolation inférieure à 0.95')
+        if enabled('ENABLE_PROGRESSIVE_GUARD'):
+            import sys
+            root=str(Path(__file__).resolve().parent.parent)
+            if root not in sys.path:sys.path.insert(0,root)
+            from ops.progressive_guard_v40 import guard_isolation
+            guard_isolation(data,dbconn)
     if tag == 'EDR_COLLECT' and not enabled('ENABLE_PROD_ACTIONS'):
         raise PermissionError('EDR collection non autorisée en production')
     if tag == 'F2B_TEST_BAN' and not enabled('ENABLE_TEST_ACTIONS'):
@@ -991,7 +997,7 @@ def main():
         'WAZUH_WINDOWS_AGENT_IDS', 'WAZUH_WINDOWS_DC_AGENT_IDS',
         'SHUFFLE_WEBHOOK_HEADER_NAME', 'SHUFFLE_WEBHOOK_HEADER_VALUE',
         'ENABLE_EDR_ISOLATION','EDR_ISOLATION_AGENT_IDS',
-        'ENABLE_AD_REMEDIATION','AD_DC_AGENT_ID','AD_DOMAIN_DNS','AD_LAB_UNTIL')})
+        'ENABLE_PROGRESSIVE_GUARD','ENABLE_AD_REMEDIATION','AD_DC_AGENT_ID','AD_DOMAIN_DNS','AD_LAB_UNTIL')})
     for name in ('DECISION_TOKEN', 'SHUFFLE_ACTION_TOKEN'):
         if len(setting(name)) < 32:
             raise SystemExit(f'{name} needs at least 32 characters')
