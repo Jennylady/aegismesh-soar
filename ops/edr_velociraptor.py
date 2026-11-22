@@ -59,6 +59,31 @@ ADD_QUARANTINE_WG_MONITOR = (
     + json.dumps(WG_LAB_RULE_TABLE) + ")) AS result FROM scope()"
 )
 
+# V4.2.12: `add_client_monitoring()` is additive and may leave an existing
+# artifact's default parameter spec unchanged. Patch only one existing
+# Quarantine group's `specs` and commit with set_client_monitoring().
+# The index is selected after exact-match readback; no caller-supplied VQL.
+# This deliberately does not delete/recreate monitoring or change global/AD.
+def _wg_monitor_patch_vql(index, *, append=False):
+    if not isinstance(index, int) or not 0 <= index < 16:
+        raise PermissionError('Index de monitoring hors limite')
+    if not isinstance(append, bool):
+        raise PermissionError('Type de patch invalide')
+    suffix = '/-' if append else ''
+    path = f'/label_events/{index}/artifacts/specs{suffix}'
+    value = ('dict(artifact="Windows.Remediation.QuarantineMonitor", '
+             'parameters=dict(env=[dict(key="RuleLookupTable", value='
+             + json.dumps(WG_LAB_RULE_TABLE) + ')]))')
+    spec_value = value if append else '[' + value + ']'
+    return ('SELECT set_client_monitoring(value=patch(item=get_client_monitoring(), '
+            'patch=[dict(op="add", path=' + json.dumps(path)
+            + ', value=' + spec_value + ')])) AS result FROM scope()')
+
+WG_MONITOR_PATCH_QUERIES = {
+    (idx, append): _wg_monitor_patch_vql(idx, append=append)
+    for idx in range(16) for append in (False, True)
+}
+
 READ_QUARANTINE_LOGS = "SELECT * FROM monitoring_logs(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 3600) LIMIT 80"
 # Distinct from monitoring_logs: these rows contain netsh results and frontend check outcome.
 READ_QUARANTINE_RESULTS = "SELECT * FROM monitoring(client_id=ClientId, artifact='Windows.Remediation.QuarantineMonitor', start_time=now() - 3600) LIMIT 100"
@@ -146,7 +171,7 @@ def client_rows(output):
 
 def api_query(query, env=None, *, cfg=None):
     """Only call sites supply constant VQL; user values are sent via --env."""
-    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1'):
+    if query not in (READ_CLIENTS,READ_LABEL,COLLECT,COLLECT_WIN_TRIAGE,COLLECT_LINUX_TRIAGE,READ_MONITORING,ADD_QUARANTINE_MONITOR,ADD_QUARANTINE_WG_MONITOR,READ_QUARANTINE_LOGS,READ_QUARANTINE_RESULTS,READ_FLOWS,READ_FLOW,READ_FLOW_DETAILS,READ_FLOW_RESULTS,*TRIAGE_RESULT_QUERIES.values(),SET_QUARANTINE,REMOVE_QUARANTINE,'SELECT * FROM info() LIMIT 1', *WG_MONITOR_PATCH_QUERIES.values()):
         raise PermissionError('VQL arbitraire refusé')
     if cfg is None and not CONF.is_file():
         raise RuntimeError('API Velociraptor non configurée : edr doctor, puis edr setup --confirm ou edr bootstrap --confirm --allow-restart')

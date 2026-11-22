@@ -158,6 +158,47 @@ def _quarantine_spec():
     return {'artifact': monitor}
 
 
+def _monitoring_patch_target():
+    """Find the unique, existing Quarantine group for a minimal JSON patch.
+
+    Do not rewrite all monitoring settings or remove the artifact: the rest
+    of Velociraptor's monitoring table may be managed by other operators.
+    """
+    rows = edr.api_query(edr.READ_MONITORING)
+    if len(rows) != 1:
+        raise RuntimeError('Table de monitoring absente ou ambiguë')
+    table = rows[0].get('monitoring')
+    if isinstance(table, str):
+        try:
+            table = json.loads(table)
+        except ValueError:
+            raise RuntimeError('Monitoring non JSON') from None
+    if not isinstance(table, dict):
+        raise RuntimeError('Format de monitoring inconnu')
+    groups = table.get('label_events') or []
+    if not isinstance(groups, list) or len(groups) > 16:
+        raise RuntimeError('Groupes du monitoring absents ou trop nombreux')
+    indices = [i for i, g in enumerate(groups)
+               if isinstance(g, dict) and str(g.get('label', '')).casefold() == 'quarantine']
+    if len(indices) != 1:
+        raise PermissionError('Groupe Quarantine absent ou ambigu')
+    idx = indices[0]
+    group = groups[idx]
+    data = group.get('artifacts')
+    if not isinstance(data, dict):
+        raise RuntimeError('Structure d artefacts Quarantine inconnue')
+    names = data.get('artifacts') or []
+    specs = data.get('specs')
+    name = 'Windows.Remediation.QuarantineMonitor'
+    if not isinstance(names, list) or names.count(name) != 1:
+        raise PermissionError('Le moniteur doit figurer exactement une fois dans la liste Quarantine')
+    if specs is not None and (not isinstance(specs, list) or not all(isinstance(x, dict) for x in specs)):
+        raise PermissionError('Liste de paramètres monitoring invalide')
+    if any(x.get('artifact') == name for x in (specs or [])):
+        raise PermissionError('Paramètres du moniteur déjà présents : remplacement refusé')
+    return idx, bool(specs), table
+
+
 def transport_inspect(agent):
     """Read-only shape diagnostic; no raw VQL configuration or secrets exposed."""
     edr.require_root()
@@ -256,12 +297,36 @@ def transport_ensure(agent, *, confirm=False):
             return {'status':'already_configured', **transport_status(agent)}
         if previous is not None:
             raise PermissionError('Paramètres existants personnalisés : pas de remplacement automatique')
-        result = edr.api_query(edr.ADD_QUARANTINE_WG_MONITOR)
-        if not result:
-            raise RuntimeError('API Velociraptor sans réponse : vérifier monitoring avant de recommencer')
+        index, append, before_table = _monitoring_patch_target()
+        query = edr.WG_MONITOR_PATCH_QUERIES[(index, append)]
+        # Atomic server-side JSON patch modifies only the exact Quarantine
+        # monitoring group's parameter specs, keeping other monitoring entries.
+        # It requires the existing COLLECT_CLIENT API role, not admin escalation.
+        response = edr.api_query(query)
+        if not response:
+            raise RuntimeError('API set_client_monitoring sans réponse : ne pas isoler')
         new_spec = _quarantine_spec()
         if _rule_table(new_spec) != edr.WG_LAB_RULE_TABLE.strip():
-            raise RuntimeError('Exception WireGuard NON confirmée côté serveur; ne pas lancer isolation')
+            raise RuntimeError('Exception WireGuard NON confirmée après set_client_monitoring; ne pas isoler')
+        # Detect unexpected changes outside this dedicated group; do not
+        # automatically restore a potentially concurrent user's configuration.
+        after_rows = edr.api_query(edr.READ_MONITORING)
+        if len(after_rows) != 1:
+            raise RuntimeError('Monitoring impossible à vérifier après écriture')
+        after_table = after_rows[0].get('monitoring')
+        if isinstance(after_table, str):
+            after_table = json.loads(after_table)
+        if not isinstance(after_table, dict):
+            raise RuntimeError('Monitoring inattendu après écriture')
+        before_other = dict(before_table)
+        after_other = dict(after_table)
+        before_other.pop('label_events', None)
+        after_other.pop('label_events', None)
+        if before_other != after_other:
+            raise RuntimeError('Changement de monitoring global détecté : contrôle requis avant isolement')
+        b_groups, a_groups = before_table.get('label_events', []), after_table.get('label_events', [])
+        if len(b_groups) != len(a_groups) or any(bg != ag for i,(bg,ag) in enumerate(zip(b_groups,a_groups)) if i != index):
+            raise RuntimeError('Modification inattendue des autres labels : contrôle requis avant isolement')
     return {'status':'configured_no_quarantine_started', **transport_status(agent),
             'scope':'Quarantine monitoring label; seule la cible LAB 001 est autorisée à déclencher cette quarantaine'}
 

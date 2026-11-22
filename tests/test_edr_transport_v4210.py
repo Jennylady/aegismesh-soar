@@ -16,29 +16,33 @@ spec={'artifact':'Windows.Remediation.QuarantineMonitor','parameters':{'env':[{'
 assert lab._rule_table(spec) == edr.WG_LAB_RULE_TABLE
 assert lab._rule_table({'artifact':'Windows.Remediation.QuarantineMonitor'}) is None
 
+# The original test verifies fixed V4.2.10 transport policy and guards. As of
+# V4.2.12 the existing monitor is changed with an atomic monitoring patch,
+# not with the (additive) add_client_monitoring() call. Full simulated write
+# and readback are tested in test_edr_transport_v4212.py.
 class Ctx:
   def __enter__(self):return self
   def __exit__(self,*args):return False
 
-state={'spec': {'artifact':'Windows.Remediation.QuarantineMonitor'}}
+state={'monitoring':{
+  'artifacts':{'artifacts':['Generic.Client.Stats']},
+  'label_events':[{'label':'Quarantine','artifacts':{'artifacts':['Windows.Remediation.QuarantineMonitor']}}]
+}}
 def api(query):
-  if query == edr.ADD_QUARANTINE_WG_MONITOR:
-    state['spec']=spec
+  if query == edr.READ_MONITORING:
+    return [state.copy()]
+  if query == edr.WG_MONITOR_PATCH_QUERIES[(0,False)]:
+    state['monitoring']['label_events'][0]['artifacts']['specs']=[spec]
     return [{'result':True}]
   raise AssertionError('unexpected query')
 
-with patch.object(edr,'require_root'),patch.object(lab,'_validate_target',return_value=lab.LAB_CLIENT),patch.object(edr,'lease_lock',return_value=Ctx()),patch.object(edr,'read_json',return_value={}),patch.object(edr,'api_clients',return_value=[]),patch.object(edr,'labels_for',return_value=[]),patch.object(lab,'_read_monitoring_assignments',return_value={'global':False}),patch.object(lab,'_quarantine_spec',side_effect=lambda:state['spec']),patch.object(edr,'api_query',side_effect=api):
+with patch.object(edr,'require_root'),patch.object(lab,'_validate_target',return_value=lab.LAB_CLIENT),patch.object(edr,'lease_lock',return_value=Ctx()),patch.object(edr,'read_json',return_value={}),patch.object(edr,'api_clients',return_value=[]),patch.object(edr,'labels_for',return_value=[]),patch.object(edr,'api_query',side_effect=api):
   assert lab.transport_status('001')['wg_exception_configured'] is False
   try:lab.transport_ensure('001',confirm=False);raise AssertionError('missing confirm accepted')
   except PermissionError:pass
   assert lab.transport_ensure('001',confirm=True)['status']=='configured_no_quarantine_started'
   assert lab.transport_status('001')['wg_exception_configured'] is True
   assert lab.transport_ensure('001',confirm=True)['status']=='already_configured'
-  try:lab.transport_ensure('006',confirm=True);raise AssertionError('DC accepted')
-  except Exception:
-    # mocked _validate_target for this section, but production guard is 001-only;
-    # test it outside mocking below
-    pass
 
 assert lab.LAB_AGENT=='001' and lab.LAB_HOST=='win-lab-01'
 with patch.object(edr,'require_root'),patch.object(lab,'_validate_target',side_effect=PermissionError('only 001')):

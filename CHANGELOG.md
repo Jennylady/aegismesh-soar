@@ -1,3 +1,9 @@
+## 4.2.12 — Mise à jour ciblée des paramètres d’un moniteur existant
+- Corrige `transport-ensure` : `add_client_monitoring()` ajoutait un artefact déjà affecté, sans modifier son `RuleLookupTable`. Utilise désormais `get_client_monitoring()` + `patch()` + `set_client_monitoring()` pour ajouter uniquement les paramètres à `Windows.Remediation.QuarantineMonitor` dans le groupe `Quarantine`.
+- Préserve les autres labels, leurs artefacts et les paramètres globaux. Refuse tout doublon, groupe ambigu, paramètres personnalisés existants, autre hôte en quarantaine, bail actif ou API non concluante. Vérifie le `RuleLookupTable` réellement relu après écriture ; n’active pas l’isolement en cas d’échec.
+- Exception réseau strictement limitée à `136.116.89.163:51820/udp` en plus de DNS/DHCP ; aucune modification de TLS, AD, des clés ni du mode de production. Aucune quarantaine déclenchée par le correctif.
+- Validations locales sans appel réel à Velociraptor : structure JSON, préservation des autres groupes, garde-fous et tests antérieurs. Le maintien du canal EDR et la coupure LDAP restent à valider sur Windows LAB.
+
 ## 4.2.11 — Compatibilité des représentations du moniteur Quarantine et garde-fou laboratoire
 - Corrige la lecture de `get_client_monitoring` : un moniteur sans paramètres personnalisés peut figurer uniquement dans `artifacts.artifacts` sans entrée dans `artifacts.specs` ; cette situation n'est plus faussement classée absent.
 - Ajoute `transport-inspect` (lecture seule) qui expose uniquement les nombres de noms/specs du groupe Quarantine, jamais les secrets ni le contenu des paramètres. Refus strict des doublons, types inattendus et des affectations absentes.
