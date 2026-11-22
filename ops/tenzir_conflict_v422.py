@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Safe Shuffle Orborus pipeline suspension for the Wazuh 1514/TCP conflict.
+"""Safe reversible Orborus pipeline suspension via a dedicated Compose override.
 
-Only changes the already identified Compose `orborus` service environment;
-never starts, stops, deletes or changes Wazuh, Docker networks, or Tenzir.
-A backup is saved outside Git, and deployment is limited to one service.
+Preserves the original Compose YAML irrespective of indentation or anchors.
+Only Orborus is recreated; Wazuh, Tenzir and Docker networks are untouched.
 """
 from __future__ import annotations
 import copy
@@ -12,8 +11,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
-import stat
 import time
 
 from ops import audit_v42 as audit
@@ -24,11 +21,23 @@ PROJECT='aegismesh-shuffle'
 SERVICE='orborus'
 ORBORUS_NAME='shuffle-orborus'
 FLAG_VALUES={'SHUFFLE_SKIP_PIPELINES':'true','SHUFFLE_PIPELINE_ENABLED':'false'}
-MARK='# AEGISMESH-SOAR V4.2.2: pipelines Tenzir suspendus (Wazuh conserve 1514/TCP)'
+MARK='# AEGISMESH-SOAR V4.2.4: Orborus-only pipeline override (Wazuh 1514/TCP reserved)'
+OVERRIDE=COMPOSE.with_name('compose.aegismesh-soar.override.yaml')
+OVERRIDE_BODY=(MARK+'\nservices:\n  orborus:\n    environment:\n'
+    '      SHUFFLE_SKIP_PIPELINES: \"true\"\n'
+    '      SHUFFLE_PIPELINE_ENABLED: \"false\"\n')
 
 
-def compose_config(path=COMPOSE):
-    p=audit.command(['docker','compose','-f',str(path),'-p',PROJECT,'config','--format','json'],timeout=35)
+def compose_args(*, override=None):
+    args=['docker','compose','-f',str(COMPOSE)]
+    if override is not None:args+=['-f',str(override)]
+    return args+['-p',PROJECT]
+
+
+def compose_config(path=None):
+    # The base Compose file is always first, so relative paths and .env remain
+    # anchored to the same project. A second file ONLY overlays Orborus flags.
+    p=audit.command(compose_args(override=path)+['config','--format','json'],timeout=35)
     if p.returncode:
         raise audit.AuditError('Docker Compose config invalide (code %d); détails conservés côté hôte' % p.returncode)
     try:
@@ -53,6 +62,10 @@ def environment_map(data):
 
 
 def service_config_check(before,after):
+    if set(before)!=set(after):raise audit.AuditError('Champs Compose principaux modifiés')
+    for key in before:
+        if key!='services' and before[key]!=after[key]:
+            raise audit.AuditError('Champ Compose global modifié: '+key)
     b=before['services']; a=after['services']
     if set(a)!=set(b) or SERVICE not in b:raise audit.AuditError('Services Compose différents après modification')
     for k in b:
@@ -65,39 +78,6 @@ def service_config_check(before,after):
     if {k:v for k,v in new_env.items() if k not in FLAG_VALUES}!={k:v for k,v in old_env.items() if k not in FLAG_VALUES}:
         raise audit.AuditError('Autres variables Orborus modifiées : opération refusée')
     return old_env
-
-
-def add_flags(text):
-    """Allow conventional 2-space YAML only; reject ambiguous layouts."""
-    lines=text.splitlines(keepends=True)
-    if '\t' in text:raise audit.AuditError('Tabs YAML interdits pour cette modification contrôlée')
-    # Only edit an unambiguous service key at the same indentation under services:
-    srv_indices=[i for i,l in enumerate(lines) if re.match(r'^  orborus:\s*(?:#.*)?$',l.rstrip('\r\n'))]
-    if len(srv_indices)!=1:raise audit.AuditError('Bloc Compose services.orborus introuvable ou ambigu')
-    start=srv_indices[0]
-    end=next((i for i in range(start+1,len(lines)) if re.match(r'^  [A-Za-z0-9_.-]+:\s*(?:#.*)?$',lines[i].rstrip('\r\n')) or re.match(r'^[A-Za-z0-9_.-]+:\s*(?:#.*)?$',lines[i].rstrip('\r\n'))),len(lines))
-    scope=lines[start:end]
-    sections=[(i,l) for i,l in enumerate(scope) if re.match(r'^    environment:\s*(?:#.*)?$',l.rstrip('\r\n'))]
-    if len(sections)>1:raise audit.AuditError('Orborus: plusieurs sections environment')
-    newline='\r\n' if '\r\n' in text else '\n'
-    if not sections:
-        insert=[f'    environment:{newline}',f'      {MARK}{newline}',
-                *(f'      {k}: "{v}"{newline}' for k,v in FLAG_VALUES.items())]
-        return ''.join(lines[:start+1]+insert+lines[start+1:])
-    idx=sections[0][0]
-    section_end=next((j for j in range(idx+1,len(scope)) if re.match(r'^    [A-Za-z0-9_.-]+:\s*',scope[j])),len(scope))
-    content=scope[idx+1:section_end]
-    non_comment=[x for x in content if x.strip() and not x.lstrip().startswith('#')]
-    kinds={'list' if re.match(r'^      -\s+',x) else 'map' if re.match(r'^      [A-Za-z0-9_]+:\s*',x) else 'unknown' for x in non_comment}
-    if 'unknown' in kinds or len(kinds)>1:raise audit.AuditError('Format de environment Orborus inhabituel')
-    kind=next(iter(kinds),'map')
-    # Reject preexisting flags to avoid overriding a user-defined policy.
-    if any(re.search(r'\b'+k+r'\b',x) for k in FLAG_VALUES for x in content):
-        raise audit.AuditError('Orborus configure déjà une politique pipeline: ne pas la remplacer')
-    additions=[f'      {MARK}{newline}']
-    for k,v in FLAG_VALUES.items():
-        additions.append(f'      - {k}={v}{newline}' if kind=='list' else f'      {k}: "{v}"{newline}')
-    return ''.join(lines[:start+section_end]+additions+lines[start+section_end:])
 
 
 def _wazuh_owns_tcp_1514():
@@ -128,12 +108,20 @@ def _running_container(name):
     return bool(obj and (obj.get('State') or {}).get('Status')=='running')
 
 
-def _container_composition_ok():
+def _compose_label_files():
     o=audit.docker_object('container',ORBORUS_NAME)
     labels=(o or {}).get('Config',{}).get('Labels') or {}
-    return bool(o and labels.get('com.docker.compose.project')==PROJECT
-      and labels.get('com.docker.compose.service')==SERVICE
-      and labels.get('com.docker.compose.project.config_files')==str(COMPOSE))
+    if not o or labels.get('com.docker.compose.project')!=PROJECT or labels.get('com.docker.compose.service')!=SERVICE:
+        return []
+    value=labels.get('com.docker.compose.project.config_files') or ''
+    return [s.strip() for s in value.split(',') if s.strip()]
+
+
+def _container_composition_ok(*, expect_override=None):
+    files=_compose_label_files()
+    if expect_override is True:return files==[str(COMPOSE),str(OVERRIDE)]
+    if expect_override is False:return files==[str(COMPOSE)]
+    return files in ([str(COMPOSE)],[str(COMPOSE),str(OVERRIDE)])
 
 
 def check_status():
@@ -143,9 +131,42 @@ def check_status():
     return {'orborus_running':_running_container(ORBORUS_NAME),'compose_owner_verified':_container_composition_ok(),
             'wazuh_1514_tcp_owner': 'wazuh-remoted' if _wazuh_owns_tcp_1514() else 'not_verified',
             'pipeline_flags':flags,
+            'compose_files':_compose_label_files(),
+            'override_present':OVERRIDE.exists(),
             'pipelines_disabled':all(env.get(k)==v for k,v in FLAG_VALUES.items()),
             'tenzir_state':audit.tenzir_status().get('state'),
             'meaning':'Pipelines désactivés ne signifie pas Tenzir réparé'}
+
+
+def _save_backup():
+    # The base file is not changed. This copy provides an audit record of the
+    # exact source configuration used to validate the override.
+    BACKUPS.mkdir(mode=0o700,parents=True,exist_ok=True)
+    os.chmod(BACKUPS,0o700)
+    filename='compose-base-'+dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+os.urandom(4).hex()+'.yaml'
+    backup=BACKUPS/filename
+    fd=os.open(str(backup),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+    with os.fdopen(fd,'wb') as h:h.write(COMPOSE.read_bytes())
+    return backup
+
+
+def _write_override():
+    # Never overwrite somebody else's override or a symlink. An existing exact
+    # managed override can be reused, for instance after an interrupted run.
+    if OVERRIDE.is_symlink():raise audit.AuditError('Override Compose lien symbolique refusé')
+    if OVERRIDE.exists():
+        if not OVERRIDE.is_file() or OVERRIDE.read_text(encoding='utf-8')!=OVERRIDE_BODY:
+            raise audit.AuditError('Override Compose préexistant et non géré; refus')
+        return False
+    fd=os.open(str(OVERRIDE),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+    with os.fdopen(fd,'w',encoding='utf-8') as h:h.write(OVERRIDE_BODY)
+    return True
+
+
+def _drop_managed_override():
+    if OVERRIDE.is_symlink() or not OVERRIDE.is_file() or OVERRIDE.read_text(encoding='utf-8')!=OVERRIDE_BODY:
+        raise audit.AuditError('Override Compose modifié pendant le déploiement: suppression refusée')
+    OVERRIDE.unlink()
 
 
 def disable_pipelines(*,confirm=False, wait_seconds=20):
@@ -159,69 +180,65 @@ def disable_pipelines(*,confirm=False, wait_seconds=20):
     old_state=audit.tenzir_status()
     if old_state.get('state') not in ('broken_missing_network','created'):
         raise audit.AuditError('Panne réseau Tenzir non confirmée; pas de suspension automatique')
-    current=COMPOSE.read_text(encoding='utf-8')
     before=compose_config()
-    # Compose is checked against the actual running instance, before touching it.
-    if SERVICE not in before['services']:raise audit.AuditError('Service orborus absent')
-    existing=environment_map(before['services'][SERVICE].get('environment'))
-    if all(existing.get(k)==v for k,v in FLAG_VALUES.items()):
-        return {'status':'already_configured','note':'Pipelines explicitement désactivés; vérifier Orborus'}
-    new=add_flags(current)
-    if new==current:raise audit.AuditError('Aucune modification détectée')
-    # Validate a temporary Compose copy IN THE SAME directory so relative paths work.
-    # Avoid writing files containing secrets to arbitrary temp locations.
-    tmp=COMPOSE.with_name('.aegismesh-soar-compose-v422.check.yaml')
-    if tmp.exists():raise audit.AuditError('Fichier temporaire Compose préexistant; refus')
+    if SERVICE not in before['services']:raise audit.AuditError('Service orborus absent du Compose fusionné')
+    orig_env=environment_map(before['services'][SERVICE].get('environment'))
+    if OVERRIDE.is_symlink():raise audit.AuditError('Override Compose symbolique: intervention refusée')
+    if OVERRIDE.exists() and (not OVERRIDE.is_file() or OVERRIDE.read_text(encoding='utf-8')!=OVERRIDE_BODY):
+        raise audit.AuditError('Override Compose inconnu: intervention refusée')
+    live=audit.docker_object('container',ORBORUS_NAME)
+    runtime=environment_map((live or {}).get('Config',{}).get('Env',[]))
+    if all(runtime.get(k)==v for k,v in FLAG_VALUES.items()):
+        if OVERRIDE.exists() and not _container_composition_ok(expect_override=True):
+            raise audit.AuditError('Orborus actif depuis un Compose différent du fichier de surcharge')
+        return {'status':'already_active','orborus_running':True,'no_wazuh_change':True}
+    if OVERRIDE.exists():
+        raise audit.AuditError('Override SOAR déjà présent mais non appliqué: intervention refusée')
+    # A base file that already sets one of the flags is an explicit operator
+    # policy and must not be silently overridden by the patch.
+    if any(k in orig_env for k in FLAG_VALUES):
+        raise audit.AuditError('Politique pipelines déjà définie dans Compose: intervention refusée')
+    # Validate changes with a temporary file BEFORE touching Orborus. Works with
+    # arbitrary valid base YAML indentation, anchors and list/map environments.
+    check=COMPOSE.with_name('.aegismesh-soar-orborus.v424.check.yaml')
+    if check.exists() or check.is_symlink():raise audit.AuditError('Fichier Compose de vérification déjà présent')
     try:
-        fd=os.open(str(tmp),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
-        with os.fdopen(fd,'w',encoding='utf-8') as h:h.write(new)
-        after=compose_config(tmp)
+        fd=os.open(str(check),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+        with os.fdopen(fd,'w',encoding='utf-8') as h:h.write(OVERRIDE_BODY)
+        after=compose_config(check)
         service_config_check(before,after)
     finally:
-        if tmp.exists():tmp.unlink()
-    BACKUPS.mkdir(mode=0o700,parents=True,exist_ok=True)
-    os.chmod(BACKUPS,0o700)
-    backup=BACKUPS/('compose-'+dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+os.urandom(4).hex()+'.yaml')
-    fd=os.open(str(backup),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
-    with os.fdopen(fd,'wb') as h:h.write(current.encode('utf-8'))
-    origin_mode=stat.S_IMODE(COMPOSE.stat().st_mode)
-    # Atomic edit; preserve permissions. Write in same directory, not source Git.
-    temp=COMPOSE.with_name('.aegismesh-soar-compose-v422.pending.yaml')
-    if temp.exists():raise audit.AuditError('Fichier Compose provisoire existant; refus')
-    fd=os.open(str(temp),os.O_CREAT|os.O_EXCL|os.O_WRONLY,origin_mode)
-    with os.fdopen(fd,'w',encoding='utf-8') as h:h.write(new)
-    os.chmod(temp,origin_mode)
-    os.replace(temp,COMPOSE)
+        if check.exists():check.unlink()
+    _save_backup()
+    created=False
     try:
-        # No --pull, no --build, no --deps. Only Orborus is recreated.
-        audit.checked(['docker','compose','-f',str(COMPOSE),'-p',PROJECT,'up','-d','--no-deps','--no-build',SERVICE],timeout=90)
+        created=_write_override()
+        audit.checked(compose_args(override=OVERRIDE)+['up','-d','--no-deps','--no-build',SERVICE],timeout=90)
         if not _running_container(ORBORUS_NAME):raise audit.AuditError('Orborus non démarré après reprise')
+        if not _container_composition_ok(expect_override=True):
+            raise audit.AuditError('Orborus redémarré depuis un Compose inattendu')
         obj=audit.docker_object('container',ORBORUS_NAME)
-        runtime=environment_map((obj.get('Config') or {}).get('Env',[]))
-        if any(runtime.get(k)!=v for k,v in FLAG_VALUES.items()):
-            raise audit.AuditError('Variables de suspension non appliquées au conteneur')
-        if not _wazuh_owns_tcp_1514():raise audit.AuditError('Wazuh ne possède plus 1514/TCP après modification')
+        env=environment_map((obj or {}).get('Config',{}).get('Env',[]))
+        if any(env.get(k)!=v for k,v in FLAG_VALUES.items()):
+            raise audit.AuditError('Variables de suspension non appliquées à Orborus')
+        if not _wazuh_owns_tcp_1514():raise audit.AuditError('Wazuh ne possède plus 1514/TCP')
         time.sleep(wait_seconds)
         if not _running_container(ORBORUS_NAME):raise audit.AuditError('Orborus arrêté après validation')
-        # Any new Tenzir start attempt proves the flags did not suppress it.
-        p=audit.command(['docker','logs','--since',str(wait_seconds)+'s','--tail','100',ORBORUS_NAME],timeout=12)
+        p=audit.command(['docker','logs','--since',str(max(wait_seconds,1))+'s','--tail','100',ORBORUS_NAME],timeout=12)
         if p.returncode:raise audit.AuditError('Logs Orborus indisponibles pour validation')
         if re.search(r'Failed to start Tenzir Node|network tenzir-network not found',p.stdout+'\n'+p.stderr,re.I):
-            raise audit.AuditError('Orborus tente toujours Tenzir: suspension inefficace')
+            raise audit.AuditError('Orborus tente toujours Tenzir malgré la suspension')
         return {'status':'pipelines_disabled','wazuh_1514_tcp_preserved':True,
-                'orborus_running':True,'tenzir_running':False,
-                'backup':str(backup),'no_wazuh_change':True,
-                'note':'Pipelines Shuffle/Tenzir suspendus; workers classiques à revalider via audit worker'}
+                'orborus_running':True,'tenzir_running':False,'override':str(OVERRIDE),
+                'original_compose_unchanged':True,'no_wazuh_change':True,
+                'note':'Pipelines Tenzir suspendus; revalider les workers classiques'}
     except (audit.AuditError,RuntimeError,OSError) as original:
-        # If any postcondition fails, restore the file before a best-effort Orborus-only rollback.
-        rollback_tmp=COMPOSE.with_name('.aegismesh-soar-compose-v422.rollback.yaml')
+        # Roll back only the file we created. No interference with another
+        # operator's file, and never delete a container or touch a Wazuh rule.
         try:
-            fd=os.open(str(rollback_tmp),os.O_CREAT|os.O_EXCL|os.O_WRONLY,origin_mode)
-            with os.fdopen(fd,'w',encoding='utf-8') as h:h.write(current)
-            os.chmod(rollback_tmp,origin_mode)
-            os.replace(rollback_tmp,COMPOSE)
-            rolled=audit.command(['docker','compose','-f',str(COMPOSE),'-p',PROJECT,'up','-d','--no-deps','--no-build',SERVICE],timeout=90)
-            suffix='; rollback Compose '+('appliqué' if rolled.returncode==0 else 'non confirmé')
+            if created:_drop_managed_override()
+            rolled=audit.command(compose_args()+['up','-d','--no-deps','--no-build',SERVICE],timeout=90)
+            suffix='; retour Orborus sur Compose original '+('effectué' if rolled.returncode==0 else 'non confirmé')
         except (OSError,audit.AuditError) as exc:
-            suffix='; rollback échoué ('+type(exc).__name__+')'
+            suffix='; retour arrière échoué ('+type(exc).__name__+')'
         raise audit.AuditError(str(original)+suffix) from original

@@ -148,3 +148,55 @@ docker logs --since 2m --tail 50 shuffle-orborus
 ```
 
 **Critères de réussite :** `pipelines_disabled=true`, Orborus actif, port `1514/TCP` toujours associé à `wazuh-remoted`, plus de nouvelles tentatives de démarrage de Tenzir, et décision Shuffle `OBSERVE` terminée. L'ancien conteneur Tenzir peut rester à l'état `Created` : l'arrêt des pipelines n'est pas une remise en état de Tenzir. Les erreurs `frikky/shuffle:shufflehealthcheck_*` doivent être examinées séparément si elles persistent après la suspension.
+
+## V4.2.4 — Éviter les hypothèses sur l'indentation du Compose
+
+Constat réel : sur GCP, `aegismesh-soar audit tenzir --disable-pipelines --confirm`
+avait échoué avec `Bloc Compose services.orborus introuvable ou ambigu`, alors que
+`docker inspect shuffle-orborus` attestait `com.docker.compose.service=orborus`.
+L'ancien éditeur utilisait le motif littéral `^  orborus:` qui suppose **deux**
+espaces dans un fichier YAML d'origine dont la mise en forme n'était pas fournie.
+
+La V4.2.4 **ne modifie plus** `compose.yaml` et ne parse plus son texte. Elle
+écrit exclusivement `compose.aegismesh-soar.override.yaml` dans le même dossier,
+avec deux variables d'environnement sur le service `orborus` :
+
+```yaml
+services:
+  orborus:
+    environment:
+      SHUFFLE_SKIP_PIPELINES: "true"
+      SHUFFLE_PIPELINE_ENABLED: "false"
+```
+
+Avant toute modification, le script vérifie : identité du projet Compose,
+propriétaire `wazuh-remoted` de `1514/TCP`, fonctionnement du backend et
+d'Orborus, panne Tenzir connue, absence d'override non géré, absence de
+politique pipeline déjà explicite, rendu `docker compose config` valide pour
+les deux fichiers et absence de changement dans tout autre service.
+
+Un exemplaire du Compose original est conservé dans
+`/var/lib/aegismesh-soar/compose-backups/` (droits 0600). Après vérification,
+la commande redéploie seulement `orborus` avec `--no-deps --no-build`, vérifie
+les variables d'environnement réellement chargées, le projet Compose, le
+port Wazuh, puis les nouveaux journaux Tenzir. En cas d'échec de ces contrôles,
+l'override géré est retiré et Orborus est réappliqué depuis le Compose
+original. Le rollback n'arrête pas Wazuh et n'efface pas Tenzir.
+
+**Commandes sur GCP** :
+
+```bash
+aegismesh-soar update
+aegismesh-soar audit tenzir --pipeline-status
+aegismesh-soar audit tenzir --disable-pipelines --confirm
+aegismesh-soar audit tenzir --pipeline-status
+aegismesh-soar audit worker --confirm --timeout 90
+ss -lntp | grep ':1514'
+docker logs --since 2m --tail 40 shuffle-orborus
+```
+
+**Attention** : `pipelines_disabled=true` atteste uniquement la neutralisation
+des pipelines optionnels ; ce n'est pas une preuve de fonctionnement de Tenzir.
+Un lancement ultérieur de Docker Compose avec le seul fichier de base pourra
+recréer Orborus sans l'override. Le mode pipeline doit alors être recontrôlé.
+Le blocage Linux/Windows et la quarantaine EDR restent à prouver séparément.

@@ -1,3 +1,11 @@
+## V4.2.4 — Surcharge Compose ciblée, sans parser le YAML d origine
+
+- Corrige `Bloc Compose services.orborus introuvable ou ambigu` provoqué par un éditeur qui supposait exactement deux espaces d indentation.
+- L original `/opt/aegismesh/integrations/shuffle/compose.yaml` reste inchangé. Un override minimal propre à AEGISMESH-SOAR ne définit que les deux variables des pipelines du service Orborus.
+- Avant de redémarrer Orborus: fusion contrôlée `docker compose -f base -f override config --format json`, comparaison stricte du reste des services et des paramètres Compose, préconditions Wazuh/Orborus/Tenzir.
+- `up -d --no-deps --no-build orborus` ciblé; post-contrôles sur variables dans le conteneur, identité du Compose, propriété Wazuh du port 1514/TCP, journaux Orborus. Arrêt et retour arrière si échec.
+- Aucun changement de Wazuh, de Fail2ban, des agents, du pare-feu ou de la politique EDR. Pas de suppression de conteneur Tenzir.
+
 ## V4.2.3 — Détection fiable du port Wazuh (1514/TCP)
 
 - Corrige un faux négatif dans le contrôle `ss -lntp` : l'ancien motif écartait `0.0.0.0:1514` à cause du chiffre précédant `:`.
