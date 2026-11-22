@@ -34,6 +34,7 @@ TAGS = {
     'EDR_COLLECT': 'edr_collection',
     'EDR_ISOLATE': 'edr_quarantine',
     'AD_DISABLE_ACCOUNT': 'ad_account_disable',
+    'AD_LAB_DISABLE': 'ad_account_disable',
 }
 RX_ID = re.compile(r'^[A-Za-z0-9_-]{8,64}$')
 RX_AGENT = re.compile(r'^\d{3}$')
@@ -58,16 +59,64 @@ def log(event, **fields):
     print(json.dumps(entry, ensure_ascii=False), flush=True)
 
 
+class _PostgresCursorAdapter:
+    """Minimal sqlite-compatible interface for the fixed, parameterized SOAR SQL."""
+    def __init__(self, connection):
+        self.connection = connection
+        self.open_cursors = []
+
+    def execute(self, sql, params=()):
+        # All SOAR SQL statements are defined by this repository, never by requests.
+        # The only placeholders used by our fixed statements are sqlite's '?'.
+        cursor = self.connection.cursor()
+        self.open_cursors.append(cursor)
+        cursor.execute(sql.replace('?', '%s'), params)
+        return cursor
+
+    def close(self):
+        for cursor in self.open_cursors:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+
+def pg_connection():
+    """Connect only to a private local PostgreSQL role, with no password in env."""
+    import psycopg2
+    from psycopg2.extras import DictCursor
+    path = Path(setting('SOAR_PG_PASSWORD_FILE', '/etc/aegismesh-soar/postgres.password'))
+    if not path.is_file():
+        raise RuntimeError('Mot de passe PostgreSQL SOAR absent')
+    mode = path.stat().st_mode & 0o777
+    if mode & 0o077:
+        raise PermissionError('Mot de passe PostgreSQL SOAR trop accessible')
+    password = path.read_text().strip()
+    if not password:
+        raise RuntimeError('Mot de passe PostgreSQL SOAR vide')
+    return psycopg2.connect(host='127.0.0.1', port=int(setting('SOAR_PG_PORT', '5432')),
+                            dbname=setting('SOAR_PG_DATABASE', 'aegismesh_soar'),
+                            user=setting('SOAR_PG_USER', 'aegismesh_soar'),
+                            password=password, connect_timeout=5,
+                            cursor_factory=DictCursor)
+
+
 @contextmanager
 def dbconn():
-    """Transactional SQLite connection that is *always closed* on exit.
-
-    sqlite3.Connection.__exit__ only commits or rolls back; it does not
-    close the handle.  On Windows that leaves db.sqlite3 locked and prevents
-    TemporaryDirectory cleanup (WinError 32).  All existing callers already
-    use ``with dbconn() as conn``; retain the transaction behavior while
-    closing the underlying handle even when an exception occurs.
-    """
+    """Close every SQLite or PostgreSQL connection after commit/rollback."""
+    backend = setting('SOAR_DB_BACKEND', 'sqlite').lower()
+    if backend == 'postgresql':
+        conn = pg_connection()
+        adapter = _PostgresCursorAdapter(conn)
+        try:
+            with conn:
+                yield adapter
+        finally:
+            adapter.close()
+            conn.close()
+        return
+    if backend != 'sqlite':
+        raise ValueError('SOAR_DB_BACKEND invalide (sqlite|postgresql)')
     conn = sqlite3.connect(DB, timeout=10)
     try:
         conn.row_factory = sqlite3.Row
@@ -78,14 +127,22 @@ def dbconn():
         conn.close()
 
 
+DECISIONS_SCHEMA = ('CREATE TABLE IF NOT EXISTS decisions '
+                    '(id TEXT PRIMARY KEY, payload TEXT NOT NULL, tag TEXT NOT NULL, '
+                    "status TEXT NOT NULL, action_status TEXT NOT NULL DEFAULT 'pending', "
+                    'execution_id TEXT, detail TEXT, updated_at TEXT NOT NULL, '
+                    'attempts INTEGER NOT NULL DEFAULT 0)')
+
+
 def init_db():
-    Path(DB).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(Path(DB).parent, 0o700)
+    backend = setting('SOAR_DB_BACKEND', 'sqlite').lower()
+    if backend == 'sqlite':
+        Path(DB).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(Path(DB).parent, 0o700)
     with dbconn() as c:
-        c.execute('CREATE TABLE IF NOT EXISTS decisions (id TEXT PRIMARY KEY, payload TEXT NOT NULL, '
-                  'tag TEXT NOT NULL, status TEXT NOT NULL, action_status TEXT NOT NULL DEFAULT \'pending\', '
-                  'execution_id TEXT, detail TEXT, updated_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)')
-    os.chmod(DB, 0o600)
+        c.execute(DECISIONS_SCHEMA)
+    if backend == 'sqlite':
+        os.chmod(DB, 0o600)
 
 
 def utcnow():
@@ -138,15 +195,27 @@ def policy(data):
         return 'record_only'
     if not data.get('approved'):
         raise PermissionError('approbation explicite manquante')
-    if len(data.get('evidence_ids', [])) < 2 or data.get('confidence', 0) < 0.90:
+    if tag != 'AD_LAB_DISABLE' and (len(data.get('evidence_ids', [])) < 2 or data.get('confidence', 0) < 0.90):
         raise PermissionError('preuves / confiance insuffisantes')
-    if tag == 'AD_DISABLE_ACCOUNT':
+    if tag in ('AD_DISABLE_ACCOUNT','AD_LAB_DISABLE'):
         # A decision from the analytic engine is NOT an unrestricted AD command.
         # Only a real domain user SID, fixed DC allowlist and verified incident are accepted.
         if not (enabled('ENABLE_PROD_ACTIONS') and enabled('ENABLE_AD_REMEDIATION')):
             raise PermissionError('remédiation AD désactivée, activer séparément après installation DC')
-        if data.get('confidence', 0) < 0.98 or len(set(data.get('evidence_ids', []))) < 2:
-            raise PermissionError('AD : score >=0.98 et deux preuves distinctes obligatoires')
+        if tag == 'AD_DISABLE_ACCOUNT':
+            if data.get('confidence', 0) < 0.98 or len(set(data.get('evidence_ids', []))) < 2:
+                raise PermissionError('AD : score >=0.98 et deux preuves distinctes obligatoires')
+        else:
+            # Separate, time-limited operator test. NEVER treat it as an AI incident.
+            until=setting('AD_LAB_UNTIL')
+            try: ready=bool(until and parse_time(until)>dt.datetime.now(dt.timezone.utc))
+            except (ValueError,TypeError): ready=False
+            if not ready or data.get('origin')!='operator_lab' or data.get('confidence')!=0 or data.get('evidence_ids')!=[]:
+                raise PermissionError('AD LAB: fenêtre opérateur expirée ou score/preuves présentés comme IA')
+            if not str(data.get('incident_id','')).startswith('AD-LAB-'):
+                raise PermissionError('AD LAB: identifiant de test explicite obligatoire')
+            if parse_time(data['expires_at']) > dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=5):
+                raise PermissionError('AD LAB: expiration excessive')
         if not re.fullmatch(r'am-[0-9a-f]{24}', data['decision_id']):
             raise PermissionError('AD : identifiant de décision compatible Windows obligatoire')
         if not re.fullmatch(r'[A-Za-z0-9_.:-]{4,120}', data.get('incident_id','')):
@@ -497,11 +566,11 @@ def reconcile_wazuh_decisions():
         try:
             data = json.loads(row['payload'])
             tag = data.get('tag')
-            if tag not in ('WAZUH_AR_PROOF', 'WAZUH_BLOCK_AGENT', 'WINDOWS_BLOCK_IP', 'AD_DISABLE_ACCOUNT'):
+            if tag not in ('WAZUH_AR_PROOF', 'WAZUH_BLOCK_AGENT', 'WINDOWS_BLOCK_IP', 'AD_DISABLE_ACCOUNT', 'AD_LAB_DISABLE'):
                 continue
             agent = str(data.get('target', {}).get('agent_id', ''))
             kind = ('proof' if tag == 'WAZUH_AR_PROOF' else 'winblock' if tag == 'WINDOWS_BLOCK_IP'
-                    else 'adaccount' if tag == 'AD_DISABLE_ACCOUNT' else 'block')
+                    else 'adaccount' if tag in ('AD_DISABLE_ACCOUNT','AD_LAB_DISABLE') else 'block')
             sid = data.get('target', {}).get('user_sid') if kind == 'adaccount' else None
             pending.append((agent, row['id'], kind, sid, row))
         except (ValueError, TypeError, KeyError):
@@ -696,7 +765,7 @@ def wazuh_disable_ad_account(data):
             'confidence': data['confidence'],
             'evidence_ids': data['evidence_ids'],
             'approved': True,
-            'action': 'disable_account',
+            'action': 'lab_disable_account' if data['tag']=='AD_LAB_DISABLE' else 'disable_account',
         }}
     }
     response = wazuh_api_request('PUT','/active-response?agents_list='+agent,body,
@@ -708,7 +777,7 @@ def wazuh_disable_ad_account(data):
     error = wazuh_evidence(agent, data['decision_id'], 'adfail', user_sid=sid)
     if error: raise RuntimeError('AD endpoint signaled failure: manual verification required')
     return {'effect':'wazuh_ar_verified' if evidence else 'wazuh_ar_dispatched',
-            'agent_id':agent, 'action':'AD_DISABLE_ACCOUNT',
+            'agent_id':agent, 'action':data['tag'],
             'user_sid':sid,'domain_dns':target['domain_dns'],
             'agent_execution_verified':bool(evidence),'evidence_source':evidence or None,
             'account_disabled_verified':bool(evidence)}
@@ -915,13 +984,14 @@ def main():
                 ENV[name.strip()] = value.strip().strip('"')
     ENV.update({k: v for k, v in os.environ.items() if k in (
         'DECISION_TOKEN', 'SHUFFLE_ACTION_TOKEN', 'SHUFFLE_WEBHOOK_URL', 'SOAR_BIND_HOST',
-        'SOAR_PORT', 'SOAR_DB', 'ENABLE_TEST_ACTIONS', 'ENABLE_PROD_ACTIONS',
+        'SOAR_PORT', 'SOAR_DB', 'SOAR_DB_BACKEND', 'SOAR_PG_PORT',
+        'SOAR_PG_DATABASE', 'SOAR_PG_USER', 'SOAR_PG_PASSWORD_FILE', 'ENABLE_TEST_ACTIONS', 'ENABLE_PROD_ACTIONS',
         'PROTECTED_CIDRS', 'WAZUH_TEST_AGENTS', 'WAZUH_API_URL', 'WAZUH_USER',
         'WAZUH_PASSWORD', 'WAZUH_CA_FILE', 'WAZUH_TLS_INSECURE', 'WAZUH_PROD_AGENT_IDS',
         'WAZUH_WINDOWS_AGENT_IDS', 'WAZUH_WINDOWS_DC_AGENT_IDS',
         'SHUFFLE_WEBHOOK_HEADER_NAME', 'SHUFFLE_WEBHOOK_HEADER_VALUE',
         'ENABLE_EDR_ISOLATION','EDR_ISOLATION_AGENT_IDS',
-        'ENABLE_AD_REMEDIATION','AD_DC_AGENT_ID','AD_DOMAIN_DNS')})
+        'ENABLE_AD_REMEDIATION','AD_DC_AGENT_ID','AD_DOMAIN_DNS','AD_LAB_UNTIL')})
     for name in ('DECISION_TOKEN', 'SHUFFLE_ACTION_TOKEN'):
         if len(setting(name)) < 32:
             raise SystemExit(f'{name} needs at least 32 characters')

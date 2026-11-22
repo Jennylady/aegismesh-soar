@@ -25,20 +25,30 @@ try {
         Write-AegisADLine -Path (Join-Path $ctx.Dir 'active-responses.log') -Line $marker
         exit 0
     }
-    if ($data.action -cne 'disable_account') { throw 'Unsupported AD action' }
+    $isLab = ($data.action -ceq 'lab_disable_account')
+    if ($data.action -cne 'disable_account' -and -not $isLab) { throw 'Unsupported AD action' }
     $id = [string]$data.decision_id
     $sid = [string]$data.user_sid
     if ($id -cnotmatch '^am-[0-9a-f]{24}$' -or
         $sid -cnotmatch '^S-1-5-21-(?:[0-9]{1,10}-){3}[0-9]{1,10}$') { throw 'Invalid decision or user SID' }
-    if ($data.approved -cne $true -or [double]$data.confidence -lt 0.98 -or
-        @($data.evidence_ids | Select-Object -Unique).Count -lt 2 -or
+    if ($data.approved -cne $true -or
         [string]$data.incident_id -notmatch '^[A-Za-z0-9_.:-]{4,120}$') {
-        throw 'Incident, evidence, confidence or approval invalid'
+        throw 'Incident ID or approval invalid'
+    }
+    if ($isLab) {
+        if ([string]$data.incident_id -cnotmatch '^AD-LAB-[0-9a-f]{24}$' -or
+            [double]$data.confidence -ne 0 -or @($data.evidence_ids).Count -ne 0) {
+            throw 'LAB must not impersonate a scored incident'
+        }
+    } elseif ([double]$data.confidence -lt 0.98 -or
+              @($data.evidence_ids | Select-Object -Unique).Count -lt 2) {
+        throw 'Incident evidence and confidence invalid'
     }
     $expiry = [datetimeoffset]::MinValue
+    $maxExpiry = if ($isLab) { [datetimeoffset]::UtcNow.AddMinutes(5) } else { [datetimeoffset]::UtcNow.AddHours(2) }
     if (-not [datetimeoffset]::TryParse([string]$data.expires_at, [ref]$expiry) -or
         $expiry -le [datetimeoffset]::UtcNow -or
-        $expiry -gt [datetimeoffset]::UtcNow.AddHours(2)) { throw 'Decision expired or excessive' }
+        $expiry -gt $maxExpiry) { throw 'Decision expired or excessive' }
     if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne 'S-1-5-18') {
         throw 'AD executor only callable as Wazuh LocalSystem service'
     }
@@ -48,6 +58,9 @@ try {
     if ([string]$data.domain_dns -ine [string]$ctx.Policy.domain_dns) { throw 'Wrong AD domain requested' }
     $phase = 'eligibility'
     $user = Assert-AegisEligibleADUser -Sid $sid -Ctx $ctx
+    if ($isLab -and [string]$user.SamAccountName -cnotmatch '^aegis-lab-[a-z0-9-]{1,12}$') {
+        throw 'LAB test may only target a dedicated aegis-lab-* account'
+    }
     $ledger = Join-Path $ctx.Dir 'aegismesh-soar-ad-ledger.jsonl'
     # Evidence and ledger are local to the DC; SOAR never receives any password or token.
     $prior = @()
@@ -60,7 +73,7 @@ try {
     }
     $entry = [ordered]@{
         decision_id=$id; user_sid=$sid; domain_dns=[string]$ctx.Domain.DNSRoot;
-        incident_id=[string]$data.incident_id; phase='prepared';
+        incident_id=[string]$data.incident_id; lab_test=[bool]$isLab; phase='prepared';
         utc=[datetime]::UtcNow.ToString('o')
     }
     $phase = 'pre_action_audit'

@@ -34,6 +34,7 @@ DEFAULTS = {
     'SOAR_BIND_HOST': '127.0.0.1',
     'SOAR_PORT': '19081',
     'SOAR_DB': '/var/lib/aegismesh-soar/decisions.sqlite3',
+    'SOAR_DB_BACKEND': 'sqlite',
     'SHUFFLE_WEBHOOK_URL': '',
     'SHUFFLE_WEBHOOK_HEADER_NAME': '',
     'SHUFFLE_WEBHOOK_HEADER_VALUE': '',
@@ -125,8 +126,8 @@ def wait_health():
 
 def tests():
     """Fail closed on tests before install/update; no real security actions."""
-    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py', ROOT/'tests/test_fleet_v34.py', ROOT/'tests/test_evidence_v35.py', ROOT/'tests/test_windows_diagnostics_v352.py', ROOT/'tests/test_windows_edr_v36.py', ROOT/'tests/test_edr_orchestrator_v37.py', ROOT/'tests/test_edr_setup_v371.py',ROOT/'tests/test_edr_flows_v372.py', ROOT/'tests/test_edr_flow_schema_v373.py', ROOT/'tests/test_edr_flow_session_v374.py',ROOT/'tests/test_ad_response_v38.py', ROOT/'tests/test_sqlite_lifecycle_v381.py']
-    for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar', ROOT/'ops/fleet.py', ROOT/'ops/wazuh/install_manager_evidence.py', ROOT/'ops/edr_velociraptor.py',ROOT/'ops/edr_enable.py',ROOT/'ops/orchestrate.py',ROOT/'ops/edr_setup_v371.py', ROOT/'ops/ad_control_v38.py'):
+    testfiles = [ROOT/'tests/test_policy.py', ROOT/'tests/test_bridge.py', ROOT/'tests/test_cli.py', ROOT/'tests/test_update.py', ROOT/'tests/test_v3.py', ROOT/'tests/test_v31.py', ROOT/'tests/test_chain_v32.py', ROOT/'tests/test_action_adapters_v32.py', ROOT/'tests/test_webhook_url_v322.py', ROOT/'tests/test_ops_v323.py', ROOT/'tests/test_permissions_v324.py', ROOT/'tests/test_network_repair_v325.py', ROOT/'tests/test_live_actions_v33.py', ROOT/'tests/test_wazuh_tls_v33.py', ROOT/'tests/test_fleet_v34.py', ROOT/'tests/test_evidence_v35.py', ROOT/'tests/test_windows_diagnostics_v352.py', ROOT/'tests/test_windows_edr_v36.py', ROOT/'tests/test_edr_orchestrator_v37.py', ROOT/'tests/test_edr_setup_v371.py',ROOT/'tests/test_edr_flows_v372.py', ROOT/'tests/test_edr_flow_schema_v373.py', ROOT/'tests/test_edr_flow_session_v374.py',ROOT/'tests/test_ad_response_v38.py', ROOT/'tests/test_sqlite_lifecycle_v381.py', ROOT/'tests/test_postgres_migration_v39.py', ROOT/'tests/test_ad_lab_v39.py']
+    for f in (ROOT/'soar/bridge.py', ROOT/'soar/soarctl.py', ROOT/'bin/aegismesh-soar', ROOT/'ops/fleet.py', ROOT/'ops/wazuh/install_manager_evidence.py', ROOT/'ops/edr_velociraptor.py',ROOT/'ops/edr_enable.py',ROOT/'ops/orchestrate.py',ROOT/'ops/edr_setup_v371.py', ROOT/'ops/ad_control_v38.py', ROOT/'ops/database_pg_v39.py'):
         cmd([sys.executable, '-m', 'py_compile', str(f)])
     for f in testfiles:
         cmd([sys.executable, str(f)])
@@ -605,6 +606,8 @@ def main():
     d.add_argument('arguments',nargs=argparse.REMAINDER)
     fleet=sub.add_parser('fleet',help='Inventaire Wazuh et preuves d’exécution des agents via Shuffle')
     fleet.add_argument('arguments',nargs=argparse.REMAINDER)
+    database=sub.add_parser('database',help='PostgreSQL SOAR: inventaire et migration sûre de SQLite')
+    database.add_argument('arguments',nargs=argparse.REMAINDER)
     ad=sub.add_parser('ad',help='AD/LDAP: état et activation contrôlée de la remédiation via Wazuh DC')
     ad.add_argument('arguments',nargs=argparse.REMAINDER)
     edr=sub.add_parser('edr',help='Velociraptor : API mTLS, clients, investigation et désisolement')
@@ -640,6 +643,8 @@ def main():
         cmd([sys.executable,str(ROOT/'ops/fleet.py')]+(args.arguments or ['status']))
     elif args.action=='chain':
         cmd([sys.executable,str(ROOT/'ops/chain.py')]+(args.arguments or ['status']))
+    elif args.action=='database':
+        cmd([sys.executable,str(ROOT/'ops/database_pg_v39.py')]+(args.arguments or ['status']))
     elif args.action=='ad':
         cmd([sys.executable,str(ROOT/'ops/ad_control_v38.py')]+(args.arguments or ['status']))
     elif args.action=='edr':

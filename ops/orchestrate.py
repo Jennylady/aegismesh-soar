@@ -55,6 +55,7 @@ def status():
         print('Jail SOAR:', 'OK' if p.returncode==0 else 'non disponible')
     except (OSError,subprocess.TimeoutExpired):print('Jail SOAR: non disponible')
     print('Décisions de production:',conf.get('ENABLE_PROD_ACTIONS','false'))
+    print('Base de décisions:',conf.get('SOAR_DB_BACKEND','sqlite'))
     print('Windows LAB:',conf.get('WAZUH_WINDOWS_AGENT_IDS','non configuré'))
     print('Windows AD (blocage IP limité):',conf.get('WAZUH_WINDOWS_DC_AGENT_IDS','non configuré'))
     print('AD/LDAP remediation:', 'activée' if conf.get('ENABLE_AD_REMEDIATION')=='true' else 'désactivée', 'DC='+str(conf.get('AD_DC_AGENT_ID') or '?'))
@@ -81,10 +82,14 @@ def status():
     print('Aucune action envoyée par ce diagnostic.')
 
 
+def conf_db_missing():
+    return bridge.setting('SOAR_DB_BACKEND','sqlite') == 'sqlite' and not Path(bridge.DB).is_file()
+
+
 def recent():
     load()
     print('Dernières décisions réellement enregistrées (aucune action déclenchée) :')
-    if not Path(bridge.DB).is_file():
+    if conf_db_missing():
         print('Aucune base SOAR sur cet environnement. Cette commande se lance sur GCP.')
         return
     with bridge.dbconn() as db:
@@ -108,6 +113,7 @@ def catalog():
     print('EDR_ISOLATE          label Quarantine Velociraptor, autorisé seulement après API mTLS,')
     print('                     correspondance agent unique, timer de retrait et autorisation explicite')
     print('EDR_RELEASE          retrait de la quarantaine SOAR exclusivement; pas de quarantaine externe')
+    print('AD_LAB_DISABLE       test réel opérateur sur compte aegis-lab-* (sans prétendre IA)')
     print('AD_DISABLE_ACCOUNT   agent DC Wazuh dédié, SID utilisateur, compte dans groupe opt-in, preuve et vérification AD')
     print('Aucune commande libre, pas de score ou preuve inventés : incidents Personne 1 → SOAR.')
 

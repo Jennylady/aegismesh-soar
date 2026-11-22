@@ -1,3 +1,11 @@
+## 3.9.0 — PostgreSQL SOAR + validation réelle AD/LDAP sur compte de laboratoire
+
+- Commande intégrée `database migrate --apply --confirm` : provision PostgreSQL local isolé, secret root-only hors Git, sauvegarde SQLite, copie transactionnelle, empreinte SHA-256 intégrale et bascule avec contrôle de santé.
+- `bridge.dbconn()` supporte SQLite et PostgreSQL avec fermeture des connexions, SQL paramétré et même contrat de lignes ; `orchestrate recent` et `ad status` compatibles PostgreSQL.
+- Action réelle distincte `AD_LAB_DISABLE` : origine `operator_lab`, sans score IA ni preuves fictives, fenêtre temporaire, SID réel, passage obligatoire par Shuffle et Wazuh agent 006, contrôle indépendant du préfixe `aegis-lab-*` sur le DC.
+- Création d'un nouveau compte AD de laboratoire explicitement autorisée, mot de passe saisi de façon sécurisée, ajout au groupe d'éligibilité. Aucun compte réel existant modifié sans action explicite.
+- Tests unitaires de migration et de politique du laboratoire, sans PostgreSQL ni AD réels.
+
 ## 3.8.1 — Correction fermeture SQLite pour les tests AD sous Windows
 
 - Les connexions `bridge.dbconn()` sont maintenant refermées explicitement à la fin de chaque transaction, y compris en cas d'exception ; `with sqlite3.Connection` ne les fermait pas.

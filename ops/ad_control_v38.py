@@ -38,6 +38,8 @@ def read_cfg(path=CONFIG):
 
 def status(path=CONFIG, rules_path=RULES):
     cfg=read_cfg(path)
+    bridge.ENV.clear();bridge.ENV.update(cfg)
+    bridge.DB=cfg.get('SOAR_DB','/var/lib/aegismesh-soar/decisions.sqlite3')
     print('AD/LDAP SOAR — read-only readiness')
     print('Feature enabled:',cfg.get('ENABLE_AD_REMEDIATION') == 'true')
     print('Production enabled:',cfg.get('ENABLE_PROD_ACTIONS') == 'true')
@@ -48,7 +50,7 @@ def status(path=CONFIG, rules_path=RULES):
     print('Live DC readiness confirmed:', current_probe(cfg.get('AD_DC_AGENT_ID') or '006',cfg.get('AD_DOMAIN_DNS') or 'ad.ikom.mg'))
     print('Endpoint executor and opt-in group: VERIFY ON REAL WINDOWS DC with Test-AegisMeshAD.ps1')
     with bridge.dbconn() as conn:
-        rows=conn.execute("SELECT id,action_status,updated_at,detail FROM decisions WHERE tag='AD_DISABLE_ACCOUNT' ORDER BY updated_at DESC LIMIT 10").fetchall()
+        rows=conn.execute("SELECT id,action_status,updated_at,detail FROM decisions WHERE tag IN ('AD_DISABLE_ACCOUNT','AD_LAB_DISABLE') ORDER BY updated_at DESC LIMIT 10").fetchall()
     for row in rows:
         try:
             detail=json.loads(row['detail'] or '{}')
@@ -56,6 +58,7 @@ def status(path=CONFIG, rules_path=RULES):
         except (ValueError,TypeError):
             verified=False
         print(row['updated_at'],row['id'],row['action_status'],'dc_proof='+str(verified))
+    print('Operator AD lab window:',cfg.get('AD_LAB_UNTIL') or 'disabled / expired')
     print('No remote action sent.')
 
 
@@ -213,6 +216,45 @@ def probe(*, agent='006', domain='ad.ikom.mg', wait=14, token_fn=None, request_f
         time.sleep(.75)
 
 
+def lab_disable(*, sid, confirm, config_path=CONFIG, proof_path=PROBE_STATE):
+    """Real full Shuffle/Wazuh/AD demonstration, explicitly NOT an AI finding."""
+    if not confirm: raise PermissionError('--confirm requis')
+    if not bridge.RX_AD_SID.fullmatch(sid):
+        raise ValueError('SID AD Windows valide requis')
+    cfg=read_cfg(config_path)
+    agent=cfg.get('AD_DC_AGENT_ID')
+    domain=cfg.get('AD_DOMAIN_DNS')
+    if not (cfg.get('ENABLE_AD_REMEDIATION')=='true' and cfg.get('ENABLE_PROD_ACTIONS')=='true'
+            and agent in cfg.get('WAZUH_WINDOWS_DC_AGENT_IDS','').split(',')):
+        raise PermissionError('AD remediation real enable requis avant le test opérateur')
+    bridge.ENV.clear();bridge.ENV.update(cfg)
+    if not current_probe(agent,domain,state_path=proof_path):
+        raise PermissionError('Readiness DC non confirmée depuis moins de 40 minutes')
+    until=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=10)).isoformat()
+    apply_and_restart({'AD_LAB_UNTIL':until},cfg)
+    decision_id='am-'+secrets.token_hex(12)
+    incident_id='AD-LAB-'+secrets.token_hex(12)
+    event={'decision_id':decision_id,'incident_id':incident_id,
+           'tag':'AD_LAB_DISABLE','origin':'operator_lab',
+           'confidence':0,'evidence_ids':[],'approved':True,
+           'target':{'agent_id':agent,'user_sid':sid,'domain_dns':domain},
+           'expires_at':(dt.datetime.now(dt.timezone.utc)+dt.timedelta(minutes=3)).isoformat()}
+    host=cfg.get('SOAR_BIND_HOST','127.0.0.1');port=cfg.get('SOAR_PORT','19081')
+    if host not in ('127.0.0.1','localhost','::1'):
+        raise PermissionError('Bridge non-local : appel test refusé')
+    req=urllib.request.Request('http://127.0.0.1:'+str(port)+'/v1/decisions',
+        data=json.dumps(event).encode('utf-8'),method='POST',
+        headers={'X-Aegismesh-Token':cfg['DECISION_TOKEN'],'Content-Type':'application/json'})
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req,timeout=8) as response:
+        reply=json.load(response)
+        if response.status!=202 or reply.get('decision_id')!=decision_id:
+            raise RuntimeError('Bridge did not accept lab decision')
+    print('TEST AD REEL soumis au bridge → Shuffle → Wazuh agent '+agent)
+    print('Decision:',decision_id)
+    print('Origine: operator_lab (aucun score IA ni evenement Wazuh invente)')
+    print('Attendre la preuve ADACCOUNT de Wazuh avant de conclure a la desactivation.')
+
+
 def main():
     parser=argparse.ArgumentParser(description='SOAR AD: no fabricated incidents, one-time DC feature gate')
     actions=parser.add_subparsers(dest='action',required=True)
@@ -225,6 +267,9 @@ def main():
     pr.add_argument('--agent-id',default='006')
     pr.add_argument('--domain',default='ad.ikom.mg')
     pr.add_argument('--confirm',action='store_true')
+    l=actions.add_parser('lab-disable',help='Real explicitly operator-authorized AD lab test through Shuffle')
+    l.add_argument('--sid',required=True)
+    l.add_argument('--confirm',action='store_true')
     d=actions.add_parser('disable')
     d.add_argument('--confirm',action='store_true')
     args=parser.parse_args()
@@ -237,6 +282,8 @@ def main():
         return probe(agent=args.agent_id, domain=args.domain)
     elif args.action=='enable':
         enable(args)
+    elif args.action=='lab-disable':
+        lab_disable(sid=args.sid,confirm=args.confirm)
     elif args.action=='disable':
         if not args.confirm: raise PermissionError('--confirm required')
         disable()

@@ -172,3 +172,10 @@ L'API Velociraptor est interrogée en lecture seule. Un flow `FINISHED` n'impliq
 ### Correctif V3.7.3 : schéma Velociraptor des flows
 
 `flows()` peut exposer `FlowId`/`ClientId`/`State` plutôt que les propriétés snake_case de `collect_client()`. Le suivi normalise les deux formats et refuse une attribution incohérente. Les anciens Flow IDs sont conservés, sans nouvelle collecte ni réinstallation.
+
+
+## PostgreSQL et validation AD/LDAP réelle (V3.9)
+
+Voir [docs/POSTGRESQL-AD-LIVE-V3.9.md](docs/POSTGRESQL-AD-LIVE-V3.9.md).
+Sur GCP: `aegismesh-soar database migrate --apply --confirm` (installation PostgreSQL et migration de l'historique), puis `aegismesh-soar database status`.
+L'intégration AD passe par un compte dédié `aegis-lab-*` et `aegismesh-soar ad lab-disable --sid <SID-REEL> --confirm` après précontrôle Wazuh réel ; pas de données d'alerte ou de score IA inventées.
