@@ -23,7 +23,9 @@ ProtectHome=true
 ProtectSystem=full
 ProtectKernelTunables=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# nftables (lecture des règles et preuve des bans) utilise Netlink.
+# Conserver les familles existantes et autoriser uniquement AF_NETLINK en plus.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

@@ -362,7 +362,18 @@ def f2b_nft_confirmed(ip):
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError('nftables inaccessible, état du confinement inconnu') from exc
     if proc.returncode:
-        raise RuntimeError('Table nftables SOAR inaccessible')
+        # Ne jamais exposer stderr brut (chemins, informations système) dans
+        # les callbacks SOAR. Donner un diagnostic classifié pour l'exploitant.
+        stderr = (proc.stderr if isinstance(proc.stderr, str) else '').lower()
+        if 'address family not supported' in stderr or 'protocol not supported' in stderr:
+            hint = 'AF_NETLINK probablement interdit par systemd'
+        elif 'operation not permitted' in stderr or 'permission denied' in stderr:
+            hint = 'accès Netlink refusé (restrictions systemd ou CAP_NET_ADMIN)'
+        elif 'no such file or directory' in stderr or 'does not exist' in stderr:
+            hint = 'table nftables absente ou non accessible'
+        else:
+            hint = 'consulter journalctl -u aegismesh-soar-bridge.service'
+        raise RuntimeError(f'Table nftables SOAR inaccessible (nft rc={proc.returncode}; {hint})')
     try:
         entries = json.loads(proc.stdout)['nftables']
     except (TypeError, ValueError, KeyError) as exc:

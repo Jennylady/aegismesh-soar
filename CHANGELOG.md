@@ -1,3 +1,9 @@
+## 4.2.6 — Accès Netlink du bridge et diagnostic nftables
+- Corrige l'échec `Table nftables SOAR inaccessible` sur GCP malgré une table nftables présente et lisible depuis un terminal root : l'unité systemd du bridge excluait `AF_NETLINK` de `RestrictAddressFamilies`.
+- Ajoute uniquement `AF_NETLINK` aux trois familles déjà autorisées (`AF_INET`, `AF_INET6`, `AF_UNIX`) ; conserve `NoNewPrivileges`, `ProtectSystem`, `PrivateTmp`, et les protections des IP.
+- Retourne un message d'erreur classifié (famille socket interdite, refus de permission, table absente, inconnu), sans divulguer les sorties brutes de nft dans le callback.
+- Ajoute un test de non-régression de l'unité systemd et des diagnostics. Aucune règle nftables, jail, IP, Wazuh, Shuffle ou politique EDR n'est modifiée.
+
 ## 4.2.5 — Vérification de la chaîne Fail2ban/nftables GCP
 - Reconnaissance exacte de `inet aegismesh_soar_gcp`, set `aegismesh_block_v4`, chaîne d’entrée et règle `tcp dport 443 ... drop` via `nft -j`.
 - Bannissement de test `198.51.100.42` : preuve de présence dans nftables pendant le ban, absence après l’unban ; aucune IP réelle testée.
