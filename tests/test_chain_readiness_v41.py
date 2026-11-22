@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,7 +15,7 @@ from ops import chain
 
 with tempfile.TemporaryDirectory() as td:
     dbfile = Path(td)/'decisions.sqlite3'
-    with sqlite3.connect(dbfile) as db:
+    with closing(sqlite3.connect(dbfile)) as db, db:
         db.execute('''CREATE TABLE decisions (
             id TEXT PRIMARY KEY, tag TEXT, status TEXT,
             action_status TEXT, execution_id TEXT, updated_at TEXT
@@ -31,7 +31,7 @@ with tempfile.TemporaryDirectory() as td:
     assert 'WAZUH_AR_PROOF' in info and 'pas un test temps réel' in info
 
     # An accepted-by-Shuffle (but not executed) action must never count as proof.
-    with sqlite3.connect(dbfile) as db:
+    with closing(sqlite3.connect(dbfile)) as db, db:
         db.execute('DELETE FROM decisions')
         db.execute('''INSERT INTO decisions VALUES (?, ?, ?, ?, ?, ?)''',
                    ('am-not-done', 'OBSERVE', 'accepted_by_shuffle',
